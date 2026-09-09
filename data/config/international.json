@@ -1,0 +1,6 @@
+{
+  "region": "intl",
+  "currentVersion": "CiRCLE PLUS",
+  "b15VersionCount": 2,
+  "notes": "currentVersion is an operational setting. B15 is always derived from this version and the immediately preceding version in the ordered catalog."
+}

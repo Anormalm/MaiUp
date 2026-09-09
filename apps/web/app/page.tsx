@@ -1,0 +1,367 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import {
+  ArrowRight,
+  CheckCircle2,
+  Database,
+  FileImage,
+  Fingerprint,
+  Gauge,
+  LockKeyhole,
+  ShieldCheck,
+  Sparkles,
+  UploadCloud,
+} from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Progress } from '@/components/ui/progress';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+
+const phases = [
+  { label: '曲库与定数', state: 'active' },
+  { label: 'Rating 验证', state: 'next' },
+  { label: 'B50 识别', state: 'next' },
+  { label: '个性推荐', state: 'locked' },
+] as const;
+
+type DataSource = 'image' | 'account';
+
+type CatalogStatus = {
+  ready: boolean;
+  songCount?: number;
+  chartCount?: number;
+  warningCount?: number;
+};
+
+type UploadState = 'idle' | 'uploading' | 'needs-calibration' | 'error';
+
+function isDataSource(value: unknown): value is DataSource {
+  return value === 'image' || value === 'account';
+}
+
+export default function Home() {
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [dataSource, setDataSource] = useState<DataSource>('image');
+  const [catalog, setCatalog] = useState<CatalogStatus | null>(null);
+  const [uploadState, setUploadState] = useState<UploadState>('idle');
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+
+  function chooseFile(file: File | null) {
+    setSelectedFile(file);
+    setUploadState('idle');
+    setUploadMessage(null);
+  }
+
+  async function inspectSelectedImage() {
+    if (!selectedFile) return;
+    setUploadState('uploading');
+    setUploadMessage('正在检查图片完整性…');
+    const body = new FormData();
+    body.append('image', selectedFile);
+    try {
+      const response = await fetch('http://127.0.0.1:8000/v1/imports/b50/inspect', {
+        method: 'POST',
+        body,
+      });
+      const payload = (await response.json()) as {
+        detail?: string;
+        width?: number;
+        height?: number;
+        sourceImageStored?: boolean;
+        recognizedCount?: number;
+        autoMatchedCount?: number;
+        importId?: string;
+        reviewUrl?: string;
+      };
+      if (!response.ok) throw new Error(payload.detail ?? `图片检查失败 (${response.status})`);
+      setUploadState('needs-calibration');
+      setUploadMessage(
+        `安全检查通过：${payload.width} × ${payload.height}。正在本机识别，已读取 ${payload.recognizedCount ?? 0} 项、自动匹配 ${payload.autoMatchedCount ?? 0} 项…`,
+      );
+      if (!payload.reviewUrl || !payload.importId) {
+        throw new Error('曲库尚未就绪，无法建立 B50 校正表');
+      }
+      window.location.assign(payload.reviewUrl);
+    } catch (error: unknown) {
+      setUploadState('error');
+      setUploadMessage(error instanceof Error ? error.message : '无法连接本地图片检查服务');
+    }
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('http://127.0.0.1:8000/v1/catalog/status', { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`catalog status ${response.status}`);
+        return response.json() as Promise<CatalogStatus>;
+      })
+      .then(setCatalog)
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        setCatalog({ ready: false });
+      });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const context = document.modelContext;
+    if (!context?.registerTool) return;
+    const lifecycle = new AbortController();
+
+    void Promise.resolve(
+      context.registerTool(
+        {
+          name: 'select_data_source',
+          title: '选择成绩数据来源',
+          description: '在页面中切换到 B50 图片上传或完整成绩导入入口。',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              source: { type: 'string', enum: ['image', 'account'] },
+            },
+            required: ['source'],
+            additionalProperties: false,
+          },
+          annotations: { readOnlyHint: false, untrustedContentHint: false },
+          execute(input: unknown) {
+            const source =
+              typeof input === 'object' && input !== null && 'source' in input
+                ? (input as { source: unknown }).source
+                : undefined;
+            if (!isDataSource(source)) throw new Error('source must be image or account');
+            setDataSource(source);
+            return { selectedSource: source };
+          },
+        },
+        { signal: lifecycle.signal },
+      ),
+    ).catch(() => undefined);
+
+    return () => lifecycle.abort();
+  }, []);
+
+  return (
+    <main className="min-h-screen overflow-hidden bg-background text-foreground">
+      <div className="mx-auto min-h-screen max-w-[1500px] px-4 py-4 sm:px-6 lg:px-8">
+        <header className="flex h-16 items-center justify-between border-b border-white/8">
+          <div className="flex items-center gap-3">
+            <div className="mai-disc grid size-10 place-items-center rounded-full">
+              <span className="size-3 rounded-full bg-background shadow-[0_0_20px_var(--pulse)]" />
+            </div>
+            <div>
+              <p className="font-display text-lg font-extrabold tracking-tight">MaiUp</p>
+              <p className="text-xs text-muted-foreground">International Rating Lab</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="hidden border-cyan-300/25 bg-cyan-300/8 text-cyan-100 sm:inline-flex">
+              CiRCLE PLUS
+            </Badge>
+            <Badge className="border-0 bg-lime-300 text-slate-950">Phase 1</Badge>
+          </div>
+        </header>
+
+        <div className="grid gap-6 py-6 lg:grid-cols-[230px_minmax(0,1fr)_290px]">
+          <aside className="order-2 rounded-3xl border border-white/8 bg-card/45 p-5 backdrop-blur-xl lg:order-1">
+            <p className="eyebrow">BUILD STATUS</p>
+            <div className="mt-5 space-y-1">
+              {phases.map((phase, index) => (
+                <div
+                  key={phase.label}
+                  className={
+                    'flex items-center gap-3 rounded-2xl px-3 py-3 ' +
+                    (phase.state === 'active' ? 'bg-cyan-300/10 text-cyan-100' : 'text-muted-foreground')
+                  }
+                >
+                  <span
+                    className={
+                      'grid size-7 shrink-0 place-items-center rounded-full border text-xs font-bold ' +
+                      (phase.state === 'active'
+                        ? 'border-cyan-300 bg-cyan-300 text-slate-950'
+                        : 'border-white/12 bg-white/3')
+                    }
+                  >
+                    {phase.state === 'locked' ? <LockKeyhole className="size-3.5" /> : index + 1}
+                  </span>
+                  <span className="text-sm font-medium">{phase.label}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-8 border-t border-white/8 pt-5">
+              <div className="mb-2 flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">数据基础</span>
+                <span className="font-semibold text-cyan-200">
+                  {catalog?.ready ? '已通过校验' : catalog === null ? '正在连接' : '等待 API'}
+                </span>
+              </div>
+              <Progress value={catalog?.ready ? 50 : 24} className="h-1.5 bg-white/8 [&_[data-slot=progress-indicator]]:bg-cyan-300" />
+              <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                {catalog?.ready
+                  ? `${catalog.songCount?.toLocaleString()} 首国际服曲目 · ${catalog.chartCount?.toLocaleString()} 张谱面`
+                  : 'Rating 通过真实国际服样本前，推荐功能保持锁定。'}
+              </p>
+            </div>
+          </aside>
+
+          <section className="order-1 min-w-0 lg:order-2">
+            <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+              <div>
+                <p className="eyebrow text-cyan-200">YOUR DATA, YOUR CLIMB</p>
+                <h1 className="mt-2 max-w-3xl font-display text-3xl font-black tracking-[-0.04em] sm:text-5xl">
+                  先把成绩读对，<span className="text-gradient">再谈适合你的上分曲。</span>
+                </h1>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <ShieldCheck className="size-4 text-lime-300" />
+                图片默认短期处理
+              </div>
+            </div>
+
+            <Tabs
+              value={dataSource}
+              onValueChange={(value) => {
+                if (isDataSource(value)) setDataSource(value);
+              }}
+              className="gap-4"
+            >
+              <TabsList className="h-auto w-full justify-start rounded-2xl border border-white/8 bg-card/55 p-1.5 sm:w-auto">
+                <TabsTrigger value="image" className="min-h-11 gap-2 rounded-xl px-4 data-active:bg-white/10 data-active:text-white">
+                  <FileImage className="size-4" /> 上传 B50
+                </TabsTrigger>
+                <TabsTrigger value="account" className="min-h-11 gap-2 rounded-xl px-4 data-active:bg-white/10 data-active:text-white">
+                  <Database className="size-4" /> 完整成绩
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="image">
+                <div className="grid-lines relative overflow-hidden rounded-[2rem] border border-cyan-200/15 bg-card/70 p-5 shadow-2xl shadow-cyan-950/20 sm:p-8">
+                  <div className="relative z-10">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <Badge variant="outline" className="border-lime-300/25 bg-lime-300/8 text-lime-200">
+                          推荐入口
+                        </Badge>
+                        <h2 className="mt-4 font-display text-2xl font-bold">上传标准 B50 图片</h2>
+                        <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+                          系统会在本机识别 B35/B15、曲目、难度、Achievement 与单谱 Rating。高置信度项目自动填好，你只需检查标黄项目。
+                        </p>
+                      </div>
+                      <div className="hidden size-16 place-items-center rounded-2xl border border-cyan-300/15 bg-cyan-300/8 sm:grid">
+                        <Fingerprint className="size-7 text-cyan-200" />
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => fileInput.current?.click()}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        chooseFile(event.dataTransfer.files.item(0));
+                      }}
+                      className="group mt-7 flex min-h-64 w-full cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed border-cyan-200/25 bg-slate-950/35 px-6 text-center transition hover:border-cyan-200/50 hover:bg-cyan-300/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300"
+                    >
+                      <span className="grid size-14 place-items-center rounded-2xl bg-cyan-300 text-slate-950 shadow-[0_0_40px_rgb(103_232_249/18%)] transition group-hover:-translate-y-1">
+                        {selectedFile ? <CheckCircle2 className="size-6" /> : <UploadCloud className="size-6" />}
+                      </span>
+                      <span className="mt-4 text-base font-bold">{selectedFile?.name ?? '选择或拖入 B50 图片'}</span>
+                      <span className="mt-1 text-sm text-muted-foreground">
+                        {selectedFile ? '图片已选中，可以先做安全检查' : 'PNG / JPEG · 暂不上传玩家账号信息'}
+                      </span>
+                    </button>
+                    <input
+                      ref={fileInput}
+                      type="file"
+                      accept="image/png,image/jpeg"
+                      className="sr-only"
+                      onChange={(event) => chooseFile(event.target.files?.item(0) ?? null)}
+                    />
+
+                    <div className="mt-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                      <p
+                        className={
+                          'max-w-xl text-xs leading-5 ' +
+                          (uploadState === 'error' ? 'text-rose-300' : 'text-muted-foreground')
+                        }
+                      >
+                        {uploadMessage ?? '下一步：图片会在本机临时保存用于 OCR；不会上传到云端，也不会直接用未核对结果推荐。'}
+                      </p>
+                      <Button
+                        disabled={!selectedFile || uploadState === 'uploading'}
+                        onClick={inspectSelectedImage}
+                        className="min-h-11 gap-2 rounded-xl bg-cyan-300 text-slate-950 hover:bg-cyan-200 disabled:opacity-45"
+                      >
+                        {uploadState === 'uploading' ? '检查中…' : '检查图片'} <ArrowRight className="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="account">
+                <div className="rounded-[2rem] border border-fuchsia-300/15 bg-card/70 p-6 sm:p-8">
+                  <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="max-w-2xl">
+                      <Badge variant="outline" className="border-fuchsia-300/25 bg-fuchsia-300/8 text-fuchsia-200">
+                        授权研究中
+                      </Badge>
+                      <h2 className="mt-4 font-display text-2xl font-bold">读取完整成绩</h2>
+                      <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                        完整成绩能减少 B50 的选择偏差。我们会优先支持用户主动上传的结构化导出；SEGA ID 直连只有在确认允许后才开放，本站当前不会收集密码。
+                      </p>
+                    </div>
+                    <div className="grid size-20 shrink-0 place-items-center rounded-full border border-fuchsia-300/20 bg-fuchsia-300/8">
+                      <LockKeyhole className="size-8 text-fuchsia-200" />
+                    </div>
+                  </div>
+                </div>
+              </TabsContent>
+            </Tabs>
+          </section>
+
+          <aside className="order-3 space-y-4">
+            <div className="rounded-3xl border border-white/8 bg-card/45 p-5">
+              <div className="flex items-center gap-2">
+                <Gauge className="size-4 text-cyan-200" />
+                <h2 className="font-display text-sm font-bold">当前计分池</h2>
+              </div>
+              <div className="mt-5 grid grid-cols-2 gap-3">
+                <div className="rounded-2xl bg-white/4 p-4">
+                  <p className="text-2xl font-black text-cyan-200">B35</p>
+                  <p className="mt-1 text-xs text-muted-foreground">较早版本</p>
+                </div>
+                <div className="rounded-2xl bg-white/4 p-4">
+                  <p className="text-2xl font-black text-lime-200">B15</p>
+                  <p className="mt-1 text-xs text-muted-foreground">最新两个版本</p>
+                </div>
+              </div>
+              <div className="mt-4 rounded-2xl border border-lime-300/12 bg-lime-300/5 p-4">
+                <p className="text-xs font-bold text-lime-200">当前实例</p>
+                <p className="mt-1 text-sm font-semibold">CiRCLE PLUS + CiRCLE</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">换代后按版本顺序自动滚动，不写死名称。</p>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-white/8 bg-card/45 p-5">
+              <div className="flex items-center gap-2">
+                <Sparkles className="size-4 text-fuchsia-200" />
+                <h2 className="font-display text-sm font-bold">推荐护栏</h2>
+              </div>
+              <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
+                {['不把榜外曲写成“没玩过”', '不只按理论收益排序', '数据不足就明确说明', '定数按 International 版本取值'].map((item) => (
+                  <li key={item} className="flex gap-2.5">
+                    <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-fuchsia-200" />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+  );
+}

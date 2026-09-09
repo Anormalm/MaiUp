@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Local databases and fetched data
+*.db
+*.sqlite3
+data/catalog/raw/*.json
+!data/catalog/raw/.gitkeep
+
+# Frontend
+node_modules/
+.vinext/
+dist/
+.wrangler/
+
+# Environment and uploads
+.env
+.env.*
+!.env.example
+uploads/
+data/imports/
+
+# OS and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local Chinese research drafts (English public versions live beside them)
+docs/research.md
+docs/architecture.md
