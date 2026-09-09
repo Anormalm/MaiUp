@@ -96,13 +96,16 @@ Current B50 entries are analyzed together instead of repeated as large recommend
 
 ## Complete score import
 
-The first broader-data implementation accepts mai-tools' clipboard table from
-an International player's authenticated official-site browser. It retains every
+The broader-data implementation accepts mai-tools' completed table automatically
+through a userscript/bookmarklet window bridge, or by manual paste, from an
+International player's authenticated official-site browser. It retains every
 exported row in `score_exports`, matches exact chart identities against the pinned
 catalog, and derives B35/B15 in `import_entries`. Region is declared by the player;
 coverage is `exported_scores`, not guaranteed complete play history.
 
-Unmatched rows remain visible and block confirmation. Corrections require a new
+The bridge checks the official origin, expected window and a per-run nonce;
+fully matched automatic imports are confirmed and display mai-tools recommended
+levels locally. Unmatched rows remain visible and block confirmation. Corrections require a new
 import; confirmed snapshots remain immutable. The existing recommender continues
 to use only a full B35/B15. See [the import guide](mai-tools-import.en.md) for the
 format, endpoints, limits, data provenance, and manual validation procedure.

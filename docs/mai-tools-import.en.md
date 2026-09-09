@@ -1,12 +1,50 @@
-# Import official-site scores with mai-tools
+# Automatically sync official-site scores with mai-tools
 
 MaiUp accepts the tab-separated clipboard table produced by
 [mai-tools score download](https://github.com/myjian/mai-tools/blob/1d1ce89b76950816845e5f82707ab108ae35d0a0/src/scripts/score-download.ts).
-The player runs mai-tools in their authenticated browser on maimai DX NET, then
-explicitly pastes the resulting scores into local MaiUp. MaiUp does not log into
-SEGA, request credentials, or fetch account pages.
+The player runs mai-tools in their authenticated browser on maimai DX NET. A
+MaiUp userscript or bookmarklet transfers the completed export directly into the
+local app. Manual paste remains available. MaiUp does not log into SEGA, request
+credentials, or fetch account pages on its backend.
 
-## Player workflow
+## Automatic workflow
+
+1. Open <http://localhost:3000/sync> in the same browser where you log into
+   maimai DX NET. Keep MaiUp's local API running on `127.0.0.1:8000`.
+2. Download the sync userscript from that page and import it into your browser's
+   userscript manager once. It runs only on the International home page when a
+   MaiUp sync was explicitly requested; it does not run on a schedule.
+3. Sign into your own International account. Click **同步官网成绩并生成推荐等级**
+   in MaiUp. The helper runs the published mai-tools score-download script,
+   includes all export fields, triggers fetching, and transfers only a completed
+   table back to MaiUp. Keep both tabs open.
+4. Fully matched imports are automatically confirmed and open the score page,
+   including the embedded mai-tools recommended-level tables. Unmatched rows
+   remain visible and block confirmation.
+
+Without a userscript manager, use **复制自动同步书签**, save the generated code as
+a bookmark's URL, then click that bookmark on your logged-in official home page.
+This opens the local receiver and automates fetching/import without copy/paste.
+Allow the local tab to open if your browser blocks it.
+
+The helper cannot log in for you. If a login redirect loses the connection,
+finish signing in and start sync again. Use the same browser for both windows;
+a separate in-app browser cannot share an ordinary browser's window connection.
+
+### Transfer behavior
+
+`postMessage` connects the two browser windows, so no credentialed official-site
+request is made from localhost and no official-origin CORS access is added to
+the API. The receiver checks the exact official origin, expected window,
+protocol version, random per-run nonce, message type and payload size. Scores
+never travel in URLs. The helper accepts only the two existing loopback frontend
+origins, and runs only on the player's International home page. There are bounded
+timeouts, cancellation, upstream completion checks and duplicate-message guards.
+
+Cancelling stops the transfer; an already-running upstream fetch may complete in
+the official tab. The one-time helper setup and manual login remain necessary.
+
+## Manual clipboard fallback
 
 1. Start the local API and frontend and synchronize the International catalog.
 2. Log into your account at <https://maimaidx-eng.com/maimai-mobile/>.
@@ -82,17 +120,38 @@ creates the new table. Restart the API after updating. Databases stay out of Git
 
 ## Validation and upstream dependency
 
-Synthetic tests cover localized/reordered headers, optional metadata, malformed
+Backend synthetic tests cover localized/reordered headers, optional metadata, malformed
 and oversized inputs, ambiguous/missing charts, alias duplicates, catalog
 provenance, AP+, preserving more than 50 scores, independent bucket selection,
 confirmation gates, and the API round trip.
+
+`npm test` in `apps/web` checks the bridge protocol and mocked browser lifecycle:
+origin/window/nonce guards, incomplete exports, one fetch per run, all included
+fields, cancellation, popup/login/upstream failures, and timeouts. It also checks
+the upstream recommended-level calculations. These are synthetic tests, not an
+authenticated browser end-to-end test.
 
 A real International export still needs manual validation: compare imported row
 count, chart matches, Achievement/FC/AP, and B50 with the original. Do not commit
 real player data. These fixtures do not test authenticated official-site fetching.
 mai-tools is independently maintained and may need updates when the site changes.
 
-Thanks to [myjian/mai-tools](https://github.com/myjian/mai-tools) for the external
-browser tool. MaiUp implements a clipboard-format adapter and does not bundle the
-upstream scraper. The bookmarklet loads the published external script when run
-by the player.
+## Embedded recommended levels
+
+The score review and recommendation pages now show mai-tools' actual
+`calcRecommendedLevels` output for SS, SS+, SSS and SSS+. Inputs are each full
+MaiUp bucket's minimum Rating plus one. Incomplete buckets do not show replacement
+targets; unresolved imports show a provisional warning. The table gives chart
+constant, rank, required Achievement and resulting Rating, not a personalized
+probability of success. MaiUp's existing recommendation algorithm remains available.
+
+The vendored calculation keeps upstream floating-point rounding, excludes AP
+bonuses from the proposed targets, and intentionally omits near-rank maximum
+factors as upstream does. Actual imported score ratings still use MaiUp's Decimal
+calculator. These differences can make the targets conservative.
+
+Thanks to [myjian/mai-tools](https://github.com/myjian/mai-tools). The browser
+scraper is loaded externally. The two small calculation modules are vendored at
+the pinned revision under `apps/web/vendor/mai-tools/`, with the upstream GNU GPL
+v3 license and a notice describing the adaptations. Their source and attribution
+are linked from the tables.

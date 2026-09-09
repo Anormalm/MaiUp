@@ -4,7 +4,8 @@ MaiUp is a local-first score analysis and personalized song recommendation tool 
 
 ## Current status
 
-- **Official-site score import:** accepts the International mai-tools clipboard table, retains all exported scores locally, reports unresolved chart matches, and builds a reviewable B35/B15 using the pinned catalog. See [the import guide](docs/mai-tools-import.en.md).
+- **Official-site score import:** a userscript or bookmarklet automatically fetches International scores with mai-tools and transfers them to local MaiUp. Manual clipboard import remains available. All exported rows are retained, unresolved matches are reported, and B35/B15 uses the pinned catalog. See [the import guide](docs/mai-tools-import.en.md).
+- **mai-tools recommended levels:** embedded SS/SS+/SSS/SSS+ target tables use the upstream algorithm to exceed each B35/B15 cutoff. These appear beside MaiUp's existing personalized recommendations.
 - **Catalog:** synchronizes International songs and charts from the public DXRating catalog, stores immutable source snapshots by content hash, validates them, and only publishes accepted snapshots to SQLite.
 - **Rating engine:** uses `Decimal` arithmetic for coefficient boundaries, flooring, the 100.5% cap, AP/AP+ bonuses, and dynamic B35/B15 construction. The B15 window is derived from the configured current version rather than hard-coded version names.
 - **B50 import:** accepts PNG/JPEG images and runs RapidOCR locally. It matches title, Achievement, rank, displayed chart constant, chart Rating, FC/FC+, chart type, difficulty, and B35/B15 position. Blue Sync markers are intentionally ignored.
@@ -30,7 +31,7 @@ Community tags are weak evidence supplied by DXRating users. They are useful for
 - Temporary imports use random IDs under `data/imports/` and are excluded from Git.
 - Local databases, raw catalog snapshots, uploaded images, OCR output, and environment files are excluded by `.gitignore`.
 - The current application does not accept or store SEGA IDs, passwords, or session cookies.
-- mai-tools runs in the player's authenticated official-site browser; only the explicitly pasted score table goes to local MaiUp. Source region is declared by the player; missing rows are not treated as unplayed charts.
+- mai-tools runs in the player's authenticated official-site browser; only the requested score export is transferred to local MaiUp, automatically or by paste. Manual exports use a declared region; automatic transfers additionally validate the official browser origin. Missing rows are not treated as unplayed charts.
 
 ## Run locally
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 
 const BOOKMARKLET = 'javascript:(function(d){if(["https://maimaidx.jp","https://maimaidx-eng.com"].indexOf(d.location.origin)>=0){var s=d.createElement("script");s.src="https://myjian.github.io/mai-tools/scripts/all-in-one.js?t="+Math.floor(Date.now()/60000);d.body.append(s);}})(document)';
@@ -41,9 +42,11 @@ export default function MaiToolsImport() {
       <div>
         <h2 className="font-display text-2xl font-bold">从官网导入成绩</h2>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          使用 mai-tools 在已登录的官网读取成绩，再将成绩表粘贴到本机。MaiUp 不接收 SEGA ID、密码或 Cookie。
+          自动读取官网成绩，并在 MaiUp 内显示 mai-tools 推荐等级。MaiUp 不接收 SEGA ID、密码或 Cookie。
         </p>
       </div>
+      <Link href="/sync" className="inline-flex rounded-xl bg-cyan-300 px-5 py-3 font-semibold text-slate-950">自动同步 + mai-tools 推荐等级</Link>
+      <p className="text-sm text-muted-foreground">下方保留手动粘贴入口，供不方便使用同步助手时使用。</p>
       <ol className="list-decimal space-y-2 pl-5 text-sm leading-6 text-muted-foreground">
         <li>登录自己的 <a className="text-cyan-200 underline" href="https://maimaidx-eng.com/maimai-mobile/" target="_blank" rel="noreferrer">maimai DX NET 国际服</a>。</li>
         <li>按 <a className="text-cyan-200 underline" href="https://myjian.github.io/mai-tools/#howto" target="_blank" rel="noreferrer">mai-tools 安装说明</a>运行书签工具，打开成绩下载功能。</li>

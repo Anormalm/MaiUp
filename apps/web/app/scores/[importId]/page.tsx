@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
+import MaiToolsRecommendedLevels from '@/app/mai-tools-recommended-levels';
 
 type Score = {
   row: number;
@@ -90,6 +91,7 @@ export default function ScoreReviewPage() {
               {data.issues.map((issue) => <li key={issue.row}>第 {issue.row} 行 · {issue.title} · {issueLabels[issue.code] ?? issue.code}</li>)}
             </ul>
           </div>}
+          <MaiToolsRecommendedLevels entries={data.entries} provisional={data.issues.length > 0} />
           <details className="rounded-xl border border-white/15 p-4">
             <summary className="cursor-pointer font-semibold">查看计算出的 B35 / B15</summary>
             <ul className="mt-3 max-h-80 space-y-1 overflow-auto text-sm">

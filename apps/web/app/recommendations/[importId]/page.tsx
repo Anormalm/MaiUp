@@ -1,5 +1,7 @@
 'use client';
 
+import MaiToolsRecommendedLevels from '@/app/mai-tools-recommended-levels';
+
 import { useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -332,6 +334,8 @@ export default function RecommendationsPage() {
             </div>
           ))}
         </section>
+
+        <div className="mt-6"><MaiToolsRecommendedLevels thresholds={result.thresholds} /></div>
 
         <section className="mt-6 rounded-2xl border border-lime-300/15 bg-lime-300/5 p-5">
           <div className="flex items-center gap-2">
