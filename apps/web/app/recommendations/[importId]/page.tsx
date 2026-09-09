@@ -82,6 +82,7 @@ type Recommendation = {
 
 type RecommendationResult = {
   importId: string;
+  reviewUrl: string;
   status: 'experimental';
   algorithmVersion: string;
   coverage: 'best50_only';
@@ -287,7 +288,7 @@ export default function RecommendationsPage() {
         <div className="text-center">
           {error ? <ShieldAlert className="mx-auto size-8 text-amber-200" /> : <Loader2 className="mx-auto size-8 animate-spin text-cyan-300" />}
           <p className="mt-3 text-sm text-muted-foreground">{error ?? '正在根据已确认 B50 计算候选…'}</p>
-          {error && <Link href={`/review/${params.importId}`} className="mt-4 inline-block text-sm text-cyan-200">返回 B50</Link>}
+          {error && <Link href="/" className="mt-4 inline-block text-sm text-cyan-200">返回导入</Link>}
         </div>
       </main>
     );
@@ -297,7 +298,7 @@ export default function RecommendationsPage() {
     <main className="min-h-screen overflow-x-hidden bg-background px-4 py-6 text-foreground sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl">
         <header className="border-b border-white/8 pb-6">
-          <Link href={`/review/${params.importId}`} className="inline-flex items-center gap-2 text-sm text-cyan-200 hover:text-cyan-100">
+          <Link href={result.reviewUrl} className="inline-flex items-center gap-2 text-sm text-cyan-200 hover:text-cyan-100">
             <ArrowLeft className="size-4" /> 返回已确认 B50
           </Link>
           <div className="mt-4 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">

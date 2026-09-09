@@ -18,6 +18,7 @@ from app.db.models import (
     GameVersion,
     ImportEntry,
     PlayerImport,
+    ScoreExport,
     Song,
 )
 from app.imports.image_inspection import InspectedImage
@@ -121,6 +122,8 @@ def update_entry(
         raise PlayerImportError("Import not found")
     if player_import.status == "confirmed":
         raise PlayerImportError("Confirmed imports are immutable")
+    if player_import.source_type == "mai_tools":
+        raise PlayerImportError("Reimport the corrected score export to change these entries")
     entry = session.get(ImportEntry, (import_id, slot))
     if entry is None:
         raise PlayerImportError("Entry slot not found")
@@ -213,7 +216,14 @@ def confirm_import(session: Session, import_id: str) -> dict[str, object]:
     total = session.scalar(
         select(func.count()).select_from(ImportEntry).where(ImportEntry.import_id == import_id)
     )
-    if total != 50 or unresolved:
+    if player_import.source_type == "mai_tools":
+        export = session.get(ScoreExport, import_id)
+        if export is None or json.loads(export.issues_json):
+            raise PlayerImportError("Resolve unmatched export rows and reimport before confirming")
+        valid_count = total is not None and 0 < total <= 50
+    else:
+        valid_count = total == 50
+    if not valid_count or unresolved:
         raise PlayerImportError(f"Import still has {unresolved or 0} unresolved entries")
     player_import.status = "confirmed"
     player_import.confirmed_at = datetime.now(UTC)

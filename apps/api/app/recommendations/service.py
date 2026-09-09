@@ -387,7 +387,7 @@ def build_recommendations(
                 "achievementGap": target - entry.achievement,
                 "evidence": evidence,
                 "fact": (
-                    f"达到 {target}% 时，按当前图片定数可从 {entry.calculated_rating} "
+                    f"达到 {target}% 时，按当前导入定数可从 {entry.calculated_rating} "
                     f"升至 {target_rating} Rating"
                 ),
             }
@@ -514,6 +514,10 @@ def build_recommendations(
 
     return {
         "importId": import_id,
+        "reviewUrl": (
+            f"/scores/{import_id}" if player_import.source_type == "mai_tools"
+            else f"/review/{import_id}"
+        ),
         "status": "experimental",
         "algorithmVersion": ALGORITHM_VERSION,
         "coverage": "best50_only",

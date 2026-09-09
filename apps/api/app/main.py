@@ -13,9 +13,11 @@ from sqlalchemy.orm import Session
 from app.api.schemas import (
     B50InspectionResponse,
     ImportEntryUpdate,
+    MaiToolsImportRequest,
     PlayerImportResponse,
     RatingRequest,
     RatingResponse,
+    ScoreExportResponse,
 )
 from app.catalog.queries import catalog_status, chart_constant, search_charts, search_songs
 from app.db.base import Base
@@ -27,6 +29,7 @@ from app.imports.image_inspection import (
     ImageInspectionError,
     inspect_b50_image,
 )
+from app.imports.mai_tools import create_score_export, get_score_export
 from app.imports.ocr import ocr_result_is_current, recognize_import
 from app.imports.service import (
     PlayerImportError,
@@ -173,6 +176,22 @@ def read_import_asset(import_id: str, db: DatabaseSession) -> FileResponse:
     if player_import is None or path is None:
         raise HTTPException(status_code=404, detail="Temporary source image not found")
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/v1/imports/mai-tools", response_model=ScoreExportResponse)
+def import_mai_tools(payload: MaiToolsImportRequest, db: DatabaseSession) -> dict[str, object]:
+    try:
+        return create_score_export(db, payload.score_text)
+    except PlayerImportError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/v1/imports/{import_id}/scores", response_model=ScoreExportResponse)
+def read_score_export(import_id: str, db: DatabaseSession) -> dict[str, object]:
+    try:
+        return get_score_export(db, import_id)
+    except PlayerImportError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.delete("/v1/imports/{import_id}/asset", status_code=204)

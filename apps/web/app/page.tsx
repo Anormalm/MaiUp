@@ -17,6 +17,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import MaiToolsImport from './mai-tools-import';
 
 const phases = [
   { label: '曲库与定数', state: 'active' },
@@ -302,22 +303,7 @@ export default function Home() {
               </TabsContent>
 
               <TabsContent value="account">
-                <div className="rounded-[2rem] border border-fuchsia-300/15 bg-card/70 p-6 sm:p-8">
-                  <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="max-w-2xl">
-                      <Badge variant="outline" className="border-fuchsia-300/25 bg-fuchsia-300/8 text-fuchsia-200">
-                        授权研究中
-                      </Badge>
-                      <h2 className="mt-4 font-display text-2xl font-bold">读取完整成绩</h2>
-                      <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                        完整成绩能减少 B50 的选择偏差。我们会优先支持用户主动上传的结构化导出；SEGA ID 直连只有在确认允许后才开放，本站当前不会收集密码。
-                      </p>
-                    </div>
-                    <div className="grid size-20 shrink-0 place-items-center rounded-full border border-fuchsia-300/20 bg-fuchsia-300/8">
-                      <LockKeyhole className="size-8 text-fuchsia-200" />
-                    </div>
-                  </div>
-                </div>
+                <MaiToolsImport />
               </TabsContent>
             </Tabs>
           </section>

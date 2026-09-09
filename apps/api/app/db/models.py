@@ -195,6 +195,15 @@ class PlayerImport(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ScoreExport(Base):
+    __tablename__ = "score_exports"
+
+    import_id: Mapped[str] = mapped_column(ForeignKey("player_imports.id"), primary_key=True)
+    source_origin: Mapped[str] = mapped_column(String(100))
+    records_json: Mapped[str] = mapped_column(Text)
+    issues_json: Mapped[str] = mapped_column(Text)
+
+
 class ImportEntry(Base):
     __tablename__ = "import_entries"
     __table_args__ = (

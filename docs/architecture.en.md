@@ -56,7 +56,7 @@ Presentation code may explain these fields but must not invent reasons or probab
 - `chart_constants`: source/region/version values with confidence and derivation;
 - `tags`, `chart_tags`: community chart metadata;
 - `player_imports`, `import_entries`: confirmed player observations;
-- future `player_scores`: broader score imports with coverage metadata;
+- `score_exports`: normalized mai-tools score snapshots, source declarations and unresolved rows;
 - future `recommendation_runs`: inputs, algorithm version, candidates, and explanations.
 
 Raw observations and derived recommendations remain separate. Updating a catalog or algorithm never rewrites historical imports.
@@ -96,11 +96,16 @@ Current B50 entries are analyzed together instead of repeated as large recommend
 
 ## Complete score import
 
-The first broader-data implementation should accept a versioned JSON document produced inside the player's authenticated browser session. The schema should include source region, export time, song identity, chart type, difficulty, Achievement, FC/AP state, Sync state, DX Score, and available play metadata.
+The first broader-data implementation accepts mai-tools' clipboard table from
+an International player's authenticated official-site browser. It retains every
+exported row in `score_exports`, matches exact chart identities against the pinned
+catalog, and derives B35/B15 in `import_entries`. Region is declared by the player;
+coverage is `exported_scores`, not guaranteed complete play history.
 
-The import process validates the schema, matches charts, reports ambiguous records, records coverage, and requires confirmation before replacing an earlier score snapshot.
-
-The preferred initial transport is a bookmarklet with file or clipboard fallback. It must not read, transmit, or store the SEGA password. Direct credential collection is outside the current trust boundary.
+Unmatched rows remain visible and block confirmation. Corrections require a new
+import; confirmed snapshots remain immutable. The existing recommender continues
+to use only a full B35/B15. See [the import guide](mai-tools-import.en.md) for the
+format, endpoints, limits, data provenance, and manual validation procedure.
 
 ## API principles
 

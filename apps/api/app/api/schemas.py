@@ -1,4 +1,5 @@
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -7,6 +8,13 @@ class RatingRequest(BaseModel):
     chart_constant: Decimal = Field(gt=0, le=15, alias="chartConstant")
     achievement: Decimal = Field(ge=0, le=101)
     full_combo: str | None = Field(default=None, alias="fullCombo")
+
+
+class MaiToolsImportRequest(BaseModel):
+    source_origin: Literal["https://maimaidx-eng.com"] = Field(alias="sourceOrigin")
+    score_text: str = Field(min_length=1, max_length=2_000_000, alias="scoreText")
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class RatingResponse(BaseModel):
@@ -73,3 +81,9 @@ class PlayerImportResponse(BaseModel):
     entries: list[ImportEntryResponse]
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class ScoreExportResponse(PlayerImportResponse):
+    source_origin: str = Field(alias="sourceOrigin")
+    scores: list[dict[str, object]]
+    issues: list[dict[str, object]]
