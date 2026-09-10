@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
+import { buildSyncUserscript } from '../scripts/build-sync-userscript.mjs';
 
 const source = readFileSync(new URL('../public/maiup-sync.js', import.meta.url), 'utf8');
 const protocolSource = readFileSync(new URL('../lib/official-sync.ts', import.meta.url), 'utf8');
@@ -55,7 +56,7 @@ test('receiver accepts only the intended official window, origin, nonce and boun
   assert.throws(() => officialSyncUrl('https://evil.invalid', nonce));
 });
 
-function browser({ origin = official, loggedIn = true, opener = true, automatic = true } = {}) {
+function browser({ origin = official, loggedIn = true, opener = true, automatic = true, scriptSource = source } = {}) {
   const sent = [];
   const listeners = new Map();
   const intervals = new Map();
@@ -95,7 +96,7 @@ function browser({ origin = official, loggedIn = true, opener = true, automatic 
     setTimeout: (fn) => { const id = ++timerId; timeouts.set(id, fn); return id; },
     clearTimeout: (id) => timeouts.delete(id),
   };
-  vm.runInNewContext(source, context);
+  vm.runInNewContext(scriptSource, context);
   const message = (type, extra = {}, originOverride = local, sourceOverride = receiver) => listeners.get('message')?.({
     origin: originOverride, source: sourceOverride, data: { protocol: 'maiup-sync-v1', nonce, type, ...extra },
   });
@@ -105,6 +106,28 @@ function browser({ origin = official, loggedIn = true, opener = true, automatic 
     script: () => appended.find((element) => element.tag === 'script'),
   };
 }
+
+test('installable userscript starts on a localhost request and stays idle on ordinary visits', () => {
+  const userscript = readFileSync(new URL('../public/maiup-sync.user.js', import.meta.url), 'utf8');
+  assert.equal(userscript.replace(/\r\n/g, '\n'), buildSyncUserscript(source), 'Regenerate the userscript after editing the bridge');
+  assert.match(userscript, /@match https:\/\/maimaidx-eng.com\/maimai-mobile\/home\/\*/);
+  const idle = browser({ automatic: false, scriptSource: userscript });
+  assert.equal(idle.sent.length, 0);
+  assert.equal(idle.appended.length, 0);
+  assert.equal(idle.alerts.length, 0);
+  const automatic = browser({ scriptSource: userscript });
+  assert.equal(automatic.sent[0].data.type, 'hello');
+  automatic.message('ready');
+  automatic.script().onload();
+  assert.equal(automatic.clicks(), 1);
+  automatic.output.value = 'Song\tChart\nx\tDX';
+  automatic.status.textContent = '✅ Complete';
+  automatic.tick();
+  assert.equal(automatic.sent.find(({ data }) => data.type === 'scores').data.scoreText,
+    automatic.output.value);
+  automatic.message('saved');
+  assert.equal(automatic.window.__maiupSyncRunning, false);
+});
 
 test('bridge waits for the paired receiver, exports all fields once, and never sends partial progress', () => {
   const b = browser();

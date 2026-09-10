@@ -11,13 +11,16 @@ credentials, or fetch account pages on its backend.
 
 1. Open <http://localhost:3000/sync> in the same browser where you log into
    maimai DX NET. Keep MaiUp's local API running on `127.0.0.1:8000`.
-2. Download the sync userscript from that page and import it into your browser's
-   userscript manager once. It runs only on the International home page when a
+2. Install a userscript manager such as Tampermonkey once, then click **安装 MaiUp 助手**
+   on the sync page and install/enable it in the manager. If the browser downloads
+   or displays the script, import the downloaded file into the manager instead.
+   Allow the extension to execute userscripts if your browser requires it.
+   It runs only on the International home page when a
    MaiUp sync was explicitly requested; it does not run on a schedule.
-3. Sign into your own International account. Click **同步官网成绩并生成推荐等级**
+3. Sign into your own International account. Click **一键导入官网成绩**
    in MaiUp. The helper runs the published mai-tools score-download script,
    includes all export fields, triggers fetching, and transfers only a completed
-   table back to MaiUp. Keep both tabs open.
+   table back to MaiUp. No bookmark click in the official tab is needed. Keep both tabs open.
 4. Fully matched imports are automatically confirmed and open the score page,
    including the embedded mai-tools recommended-level tables. Unmatched rows
    remain visible and block confirmation.
@@ -38,6 +41,13 @@ tab navigates to the official site.
 The helper cannot log in for you. If a login redirect loses the connection,
 finish signing in and start sync again. Use the same browser for both windows;
 a separate in-app browser cannot share an ordinary browser's window connection.
+If the in-app browser does not support userscript extensions, open localhost in
+the browser where the manager and your official login are available.
+
+The directly installable `/maiup-sync.user.js` is generated from `/maiup-sync.js`
+by `scripts/build-sync-userscript.mjs`. `npm run dev` and `npm run build` regenerate
+it; the tests check that the committed installable file matches the bridge source.
+After updating a locally installed helper, reinstall it from the sync page.
 
 ### Transfer behavior
 
