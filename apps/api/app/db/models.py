@@ -218,3 +218,43 @@ class ImportEntry(Base):
     needs_review: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     issue_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PlayerScoreSnapshot(Base):
+    __tablename__ = "player_score_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[int] = mapped_column(Integer)
+    source_region: Mapped[str] = mapped_column(String(20))
+    source_name: Mapped[str] = mapped_column(String(80))
+    exported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    catalog_snapshot_id: Mapped[str] = mapped_column(ForeignKey("catalog_snapshots.id"))
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    supplied_count: Mapped[int] = mapped_column(Integer)
+    matched_count: Mapped[int] = mapped_column(Integer)
+    unmatched_count: Mapped[int] = mapped_column(Integer)
+    duplicate_count: Mapped[int] = mapped_column(Integer)
+
+
+class PlayerScore(Base):
+    __tablename__ = "player_scores"
+    __table_args__ = (
+        Index("ix_player_score_snapshot_chart", "snapshot_id", "chart_id"),
+    )
+
+    snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("player_score_snapshots.id"), primary_key=True
+    )
+    source_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chart_id: Mapped[str | None] = mapped_column(ForeignKey("charts.id"), nullable=True)
+    title: Mapped[str] = mapped_column(String(300))
+    chart_type: Mapped[str] = mapped_column(String(20))
+    difficulty: Mapped[str] = mapped_column(String(30))
+    achievement: Mapped[Decimal] = mapped_column(Numeric(7, 4))
+    full_combo: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    sync_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    dx_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    played_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    match_status: Mapped[str] = mapped_column(String(30), index=True)
+    issue_code: Mapped[str | None] = mapped_column(String(50), nullable=True)

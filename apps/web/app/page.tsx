@@ -5,6 +5,7 @@ import {
   ArrowRight,
   CheckCircle2,
   Database,
+  FileJson,
   FileImage,
   Fingerprint,
   Gauge,
@@ -36,17 +37,75 @@ type CatalogStatus = {
 
 type UploadState = 'idle' | 'uploading' | 'needs-calibration' | 'error';
 
+type ScoreImportResult = {
+  id: string;
+  status: string;
+  suppliedCount: number;
+  matchedCount: number;
+  unmatchedCount: number;
+  duplicateCount: number;
+  coverageRatio: string;
+  issues: Array<{ sourceIndex: number; title: string; issueCode: string }>;
+};
+
 function isDataSource(value: unknown): value is DataSource {
   return value === 'image' || value === 'account';
 }
 
 export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
+  const scoreFileInput = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [dataSource, setDataSource] = useState<DataSource>('image');
   const [catalog, setCatalog] = useState<CatalogStatus | null>(null);
   const [uploadState, setUploadState] = useState<UploadState>('idle');
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+  const [scoreImportState, setScoreImportState] = useState<UploadState>('idle');
+  const [scoreImportMessage, setScoreImportMessage] = useState<string | null>(null);
+  const [scoreImportResult, setScoreImportResult] = useState<ScoreImportResult | null>(null);
+  const [bookmarkletMessage, setBookmarkletMessage] = useState<string | null>(null);
+
+  async function copyBookmarklet() {
+    try {
+      const response = await fetch('/maiup-dxnet-export.js', { cache: 'no-store' });
+      if (!response.ok) throw new Error('无法加载导出脚本');
+      const source = await response.text();
+      const singleLineSource = source.replace(/\r?\n/g, ' ');
+      await navigator.clipboard.writeText(`javascript:${singleLineSource}`);
+      setBookmarkletMessage('已复制。新建浏览器书签，把内容粘贴到网址栏。');
+    } catch (error: unknown) {
+      setBookmarkletMessage(error instanceof Error ? error.message : '复制失败');
+    }
+  }
+
+  async function importScoreFile(file: File | null) {
+    if (!file) return;
+    setScoreImportState('uploading');
+    setScoreImportMessage('正在校验并匹配谱面…');
+    setScoreImportResult(null);
+    try {
+      if (file.size > 5 * 1024 * 1024) throw new Error('JSON 文件不能超过 5 MB');
+      const payload: unknown = JSON.parse(await file.text());
+      const response = await fetch('http://127.0.0.1:8000/v1/imports/scores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const result = (await response.json()) as ScoreImportResult & { detail?: string };
+      if (!response.ok) throw new Error(result.detail ?? `成绩导入失败 (${response.status})`);
+      setScoreImportResult(result);
+      setScoreImportState('needs-calibration');
+      setScoreImportMessage(
+        `已匹配 ${result.matchedCount} 张谱面，${result.unmatchedCount} 项待处理，忽略 ${result.duplicateCount} 条较低重复成绩。`,
+      );
+      window.location.assign(`/scores/${result.id}`);
+    } catch (error: unknown) {
+      setScoreImportState('error');
+      setScoreImportMessage(error instanceof Error ? error.message : '无法读取成绩 JSON');
+    } finally {
+      if (scoreFileInput.current) scoreFileInput.current.value = '';
+    }
+  }
 
   function chooseFile(file: File | null) {
     setSelectedFile(file);
@@ -229,10 +288,10 @@ export default function Home() {
             >
               <TabsList className="h-auto w-full justify-start rounded-2xl border border-white/8 bg-card/55 p-1.5 sm:w-auto">
                 <TabsTrigger value="image" className="min-h-11 gap-2 rounded-xl px-4 data-active:bg-white/10 data-active:text-white">
-                  <FileImage className="size-4" /> 上传 B50
+                  <FileImage className="size-4" /> 仅导入 B50 图片
                 </TabsTrigger>
                 <TabsTrigger value="account" className="min-h-11 gap-2 rounded-xl px-4 data-active:bg-white/10 data-active:text-white">
-                  <Database className="size-4" /> 完整成绩
+                  <Database className="size-4" /> 导入全部成绩
                 </TabsTrigger>
               </TabsList>
 
@@ -244,9 +303,9 @@ export default function Home() {
                         <Badge variant="outline" className="border-lime-300/25 bg-lime-300/8 text-lime-200">
                           推荐入口
                         </Badge>
-                        <h2 className="mt-4 font-display text-2xl font-bold">上传标准 B50 图片</h2>
+                        <h2 className="mt-4 font-display text-2xl font-bold">只用 B50 快速推荐</h2>
                         <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                          系统会在本机识别 B35/B15、曲目、难度、Achievement 与单谱 Rating。高置信度项目自动填好，你只需检查标黄项目。
+                          上传标准 B50 成绩图，识别并校对 B35/B15 后开始推荐。速度快，但只能根据榜内 50 张谱面推断你的水平和擅长类型。
                         </p>
                       </div>
                       <div className="hidden size-16 place-items-center rounded-2xl border border-cyan-300/15 bg-cyan-300/8 sm:grid">
@@ -308,10 +367,65 @@ export default function Home() {
                       <Badge variant="outline" className="border-fuchsia-300/25 bg-fuchsia-300/8 text-fuchsia-200">
                         授权研究中
                       </Badge>
-                      <h2 className="mt-4 font-display text-2xl font-bold">读取完整成绩</h2>
+                      <h2 className="mt-4 font-display text-2xl font-bold">用全部成绩做完整分析</h2>
                       <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                        完整成绩能减少 B50 的选择偏差。我们会优先支持用户主动上传的结构化导出；SEGA ID 直连只有在确认允许后才开放，本站当前不会收集密码。
+                        从 DX NET 读取所有已游玩谱面，并优先采用官网 Rating Target 的 B35/B15。完整成绩能识别榜外成绩、舒适定数和谱面类型偏好，推荐会比只看 B50 更个性化。
                       </p>
+                      <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
+                        <Button
+                          type="button"
+                          disabled={scoreImportState === 'uploading'}
+                          onClick={() => scoreFileInput.current?.click()}
+                          className="min-h-11 gap-2 rounded-xl bg-fuchsia-300 text-slate-950 hover:bg-fuchsia-200"
+                        >
+                          <FileJson className="size-4" />
+                          {scoreImportState === 'uploading' ? '导入中…' : '选择成绩 JSON'}
+                        </Button>
+                        <input
+                          ref={scoreFileInput}
+                          type="file"
+                          accept="application/json,.json"
+                          className="sr-only"
+                          onChange={(event) => void importScoreFile(event.target.files?.item(0) ?? null)}
+                        />
+                        <p className={scoreImportState === 'error' ? 'text-sm text-rose-300' : 'text-sm text-muted-foreground'}>
+                          {scoreImportMessage ?? '下一步会提供 DX NET 页面内运行的导出工具。'}
+                        </p>
+                      </div>
+                      <div className="mt-4 rounded-2xl border border-white/8 bg-white/3 p-4">
+                        <p className="text-sm font-semibold text-fuchsia-100">从 DX NET 导出</p>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          将导出脚本保存成书签。在已登录的 International DX NET 页面点击一次，它会读取全部 5 个难度和官网 B35/B15 并下载 JSON；账号凭据不会离开 DX NET。
+                        </p>
+                        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void copyBookmarklet()}
+                            className="min-h-10 rounded-xl border-fuchsia-200/20 bg-fuchsia-300/5 text-fuchsia-100 hover:bg-fuchsia-300/10"
+                          >
+                            复制导出书签代码
+                          </Button>
+                          {bookmarkletMessage && <span className="text-xs text-muted-foreground">{bookmarkletMessage}</span>}
+                        </div>
+                      </div>
+                      {scoreImportResult && (
+                        <div className="mt-5 rounded-2xl border border-fuchsia-200/15 bg-slate-950/35 p-4">
+                          <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
+                            <span>抓到 {scoreImportResult.suppliedCount} 条</span>
+                            <span className="text-lime-200">匹配 {scoreImportResult.matchedCount}</span>
+                            <span className={scoreImportResult.unmatchedCount ? 'text-amber-200' : 'text-lime-200'}>
+                              待处理 {scoreImportResult.unmatchedCount}
+                            </span>
+                            <span>曲库匹配率 {(Number(scoreImportResult.coverageRatio) * 100).toFixed(1)}%</span>
+                          </div>
+                          {scoreImportResult.issues.length > 0 && (
+                            <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                              首个待处理项目：{scoreImportResult.issues[0].title}（{scoreImportResult.issues[0].issueCode}）
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className="grid size-20 shrink-0 place-items-center rounded-full border border-fuchsia-300/20 bg-fuchsia-300/8">
                       <LockKeyhole className="size-8 text-fuchsia-200" />

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from decimal import Decimal
 from statistics import median
@@ -9,8 +8,8 @@ from statistics import median
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.catalog.covers import cover_urls_for_snapshot
 from app.catalog.versioning import VersionPolicy
-from app.config import get_settings
 from app.db.models import (
     CatalogSnapshot,
     Chart,
@@ -27,10 +26,6 @@ from app.rating.calculator import calculate_chart_rating
 
 ALGORITHM_VERSION = "b50-personal-fit-v0.6"
 TARGET_ACHIEVEMENTS = (Decimal("100.0000"), Decimal("100.5000"))
-COVER_BASE_URL = "https://dp4p6x0xfi5o9.cloudfront.net/maimai/img/cover"
-COVER_NAME_PATTERN = re.compile(r"^[0-9a-f]{64}(?:\.png)?$")
-
-
 class RecommendationError(ValueError):
     pass
 
@@ -269,26 +264,6 @@ def _select_diverse_candidates(
     return selected
 
 
-def _cover_urls(snapshot: CatalogSnapshot) -> dict[str, str]:
-    raw_path = get_settings().raw_catalog_dir / f"{snapshot.content_hash}.json"
-    if not raw_path.exists():
-        return {}
-    try:
-        payload = json.loads(raw_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-    result: dict[str, str] = {}
-    for song in payload.get("songs", []):
-        song_id = str(song.get("id", ""))
-        image_name = str(song.get("imageName", ""))
-        if not song_id or not COVER_NAME_PATTERN.fullmatch(image_name):
-            continue
-        filename = image_name if image_name.endswith(".png") else f"{image_name}.png"
-        result[song_id] = f"{COVER_BASE_URL}/{filename}"
-    return result
-
-
 def build_recommendations(
     session: Session,
     import_id: str,
@@ -327,7 +302,7 @@ def build_recommendations(
         for entry in entries
         if entry.chart_constant is not None and entry.achievement is not None
     ]
-    cover_urls = _cover_urls(snapshot)
+    cover_urls = cover_urls_for_snapshot(snapshot)
     current_chart_ids = {entry.chart_id for entry in entries if entry.chart_id}
     chart_song_ids = dict(
         session.execute(

@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import (
     B50InspectionResponse,
+    CompleteScoreImportRequest,
+    CompleteScoreImportResponse,
     ImportEntryUpdate,
     PlayerImportResponse,
     RatingRequest,
@@ -22,6 +24,11 @@ from app.db.base import Base
 from app.db.models import PlayerImport
 from app.db.session import engine, get_db
 from app.imports.asset_store import delete_source_image, source_image_path, store_source_image
+from app.imports.complete_scores import (
+    CompleteScoreImportError,
+    get_complete_score_import,
+    import_complete_scores,
+)
 from app.imports.image_inspection import (
     MAX_IMAGE_BYTES,
     ImageInspectionError,
@@ -113,6 +120,24 @@ def calculate_rating(payload: RatingRequest) -> RatingResponse:
         coefficient=coefficient_for(payload.achievement),
         achievementUsed=used,
     )
+
+
+@app.post("/v1/imports/scores", response_model=CompleteScoreImportResponse)
+def create_complete_score_import(
+    payload: CompleteScoreImportRequest, db: DatabaseSession
+) -> dict[str, object]:
+    try:
+        return import_complete_scores(db, payload)
+    except CompleteScoreImportError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.get("/v1/imports/scores/{import_id}", response_model=CompleteScoreImportResponse)
+def read_complete_score_import(import_id: str, db: DatabaseSession) -> dict[str, object]:
+    try:
+        return get_complete_score_import(db, import_id)
+    except CompleteScoreImportError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.post("/v1/imports/b50/inspect", response_model=B50InspectionResponse)

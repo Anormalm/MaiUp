@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "sourceRegion": "international",
+  "sourceName": "maimai DX NET user export",
+  "exportedAt": "2026-09-10T00:00:00Z",
+  "scores": [
+    {
+      "title": "Example Song",
+      "chartType": "dx",
+      "difficulty": "master",
+      "achievement": "100.5000",
+      "fullCombo": "FC+",
+      "syncStatus": null,
+      "dxScore": 1234567,
+      "playedAt": null
+    }
+  ]
+}
