@@ -7,10 +7,30 @@ import ts from 'typescript';
 const source = readFileSync(new URL('../public/maiup-sync.js', import.meta.url), 'utf8');
 const protocolSource = readFileSync(new URL('../lib/official-sync.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(protocolSource, { compilerOptions: { module: ts.ModuleKind.ES2022 } }).outputText;
-const { validSyncMessage, officialSyncUrl } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'));
+const { validSyncMessage, officialSyncUrl, syncWaitStatus, checkLocalCatalog } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'));
 const nonce = '12345678-1234-1234-1234-123456789abc';
 const official = 'https://maimaidx-eng.com';
 const local = 'http://localhost:3000';
+
+test('a missing helper is identified early and never mislabeled as a fetch timeout', () => {
+  assert.equal(syncWaitStatus(false, 9999, false), null);
+  assert.equal(syncWaitStatus(false, 10_000, false), 'helper_missing');
+  assert.equal(syncWaitStatus(false, 180_000, false), 'helper_missing');
+  assert.equal(syncWaitStatus(true, 10_000, false), null);
+  assert.equal(syncWaitStatus(true, 180_000, false), 'fetch_timeout');
+  assert.equal(syncWaitStatus(false, 100, true), 'connection_closed');
+});
+
+test('sync preflight reports a stopped API or missing catalog before visiting the official site', async () => {
+  await assert.rejects(checkLocalCatalog(async () => { throw new TypeError('fetch failed'); }), /8000/);
+  await assert.rejects(checkLocalCatalog(async () => new Response('{}', { status: 500 })), /API/);
+  await assert.rejects(checkLocalCatalog(async () => Response.json({ ready: false })), /曲库/);
+  await checkLocalCatalog(async (url, options) => {
+    assert.equal(url, 'http://127.0.0.1:8000/v1/catalog/status');
+    assert.ok(options.signal instanceof AbortSignal);
+    return Response.json({ ready: true });
+  });
+});
 
 test('receiver accepts only the intended official window, origin, nonce and bounded payload', () => {
   const peer = {};

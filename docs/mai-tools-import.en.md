@@ -27,6 +27,14 @@ a bookmark's URL, then click that bookmark on your logged-in official home page.
 This opens the local receiver and automates fetching/import without copy/paste.
 Allow the local tab to open if your browser blocks it.
 
+The sync page provides a draggable **MaiUp 自动同步** bookmark. This is different
+from the original all-in-one mai-tools bookmarklet: only the MaiUp helper sends
+the finished export back to the local app. A missing helper is reported after
+ten seconds, with setup guidance, instead of being described as a score-fetch
+timeout. The connection remains available briefly so you can run the bookmark
+in the already-open official tab. The local API/catalog is checked before that
+tab navigates to the official site.
+
 The helper cannot log in for you. If a login redirect loses the connection,
 finish signing in and start sync again. Use the same browser for both windows;
 a separate in-app browser cannot share an ordinary browser's window connection.
