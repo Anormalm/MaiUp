@@ -19,12 +19,13 @@ from app.db.models import (
     GameVersion,
     ImportEntry,
     PlayerImport,
+    PlayerScore,
     Song,
     Tag,
 )
 from app.rating.calculator import calculate_chart_rating
 
-ALGORITHM_VERSION = "b50-personal-fit-v0.6"
+ALGORITHM_VERSION = "full-history-personal-fit-v0.7"
 TARGET_ACHIEVEMENTS = (Decimal("100.0000"), Decimal("100.5000"))
 class RecommendationError(ValueError):
     pass
@@ -32,6 +33,14 @@ class RecommendationError(ValueError):
 
 @dataclass(frozen=True)
 class ObservedScore:
+    bucket: str
+    constant: Decimal
+    achievement: Decimal
+
+
+@dataclass(frozen=True)
+class PerformanceSample:
+    chart_id: str
     bucket: str
     constant: Decimal
     achievement: Decimal
@@ -51,6 +60,20 @@ MIN_STRENGTH_SAMPLES = 3
 
 def _first_beating_target(constant: Decimal, threshold: int) -> tuple[Decimal, int] | None:
     for achievement in TARGET_ACHIEVEMENTS:
+        rating = calculate_chart_rating(constant, achievement)
+        if rating > threshold:
+            return achievement, rating
+    return None
+
+
+def _first_improving_target(
+    constant: Decimal,
+    threshold: int,
+    current_achievement: Decimal | None,
+) -> tuple[Decimal, int] | None:
+    for achievement in TARGET_ACHIEVEMENTS:
+        if current_achievement is not None and achievement <= current_achievement:
+            continue
         rating = calculate_chart_rating(constant, achievement)
         if rating > threshold:
             return achievement, rating
@@ -91,10 +114,10 @@ def _version_policy(session: Session, snapshot: CatalogSnapshot) -> VersionPolic
     return VersionPolicy(versions, current_version, b15_version_count=2)
 
 
-def _profile(entries: list[ImportEntry], bucket: str) -> dict[str, object]:
-    selected = [entry for entry in entries if entry.bucket == bucket]
-    constants = [entry.chart_constant for entry in selected if entry.chart_constant is not None]
-    achievements = [entry.achievement for entry in selected if entry.achievement is not None]
+def _profile(samples: list[PerformanceSample], bucket: str) -> dict[str, object]:
+    selected = [sample for sample in samples if sample.bucket == bucket]
+    constants = [sample.constant for sample in selected]
+    achievements = [sample.achievement for sample in selected]
     return {
         "entryCount": len(selected),
         "constantMin": min(constants) if constants else None,
@@ -104,25 +127,18 @@ def _profile(entries: list[ImportEntry], bucket: str) -> dict[str, object]:
     }
 
 
-def _performance_residuals(entries: list[ImportEntry]) -> dict[str, Decimal]:
-    usable = [
-        entry
-        for entry in entries
-        if entry.chart_id and entry.chart_constant is not None and entry.achievement is not None
-    ]
+def _performance_residuals(samples: list[PerformanceSample]) -> dict[str, Decimal]:
     result: dict[str, Decimal] = {}
-    for entry in usable:
+    for sample in samples:
         peers = [
             peer.achievement
-            for peer in usable
-            if peer.bucket == entry.bucket
-            and peer.achievement is not None
-            and peer.chart_constant is not None
-            and abs(peer.chart_constant - entry.chart_constant) <= Decimal("0.2")
+            for peer in samples
+            if peer.bucket == sample.bucket
+            and abs(peer.constant - sample.constant) <= Decimal("0.2")
         ]
-        if len(peers) < 3 or entry.achievement is None or entry.chart_id is None:
+        if len(peers) < 3:
             continue
-        result[entry.chart_id] = entry.achievement - Decimal(str(median(peers)))
+        result[sample.chart_id] = sample.achievement - Decimal(str(median(peers)))
     return result
 
 
@@ -138,12 +154,20 @@ def _strength_profile(
             _fact, values = grouped.setdefault(tag.tag_id, (tag, []))
             values.append(residual)
 
+    qualified = [
+        (tag, values, sum(values, Decimal("0")) / Decimal(len(values)))
+        for tag, values in grouped.values()
+        if len(values) >= MIN_STRENGTH_SAMPLES
+    ]
+    baseline = (
+        Decimal(str(median(item[2] for item in qualified)))
+        if len(qualified) >= 3
+        else Decimal("0")
+    )
     strengths: list[dict[str, object]] = []
-    for tag, values in grouped.values():
-        if len(values) < MIN_STRENGTH_SAMPLES:
-            continue
-        raw_mean = sum(values, Decimal("0")) / Decimal(len(values))
-        shrunk_score = raw_mean * Decimal(len(values)) / Decimal(len(values) + 5)
+    for tag, values, raw_mean in qualified:
+        relative_mean = raw_mean - baseline
+        shrunk_score = relative_mean * Decimal(len(values)) / Decimal(len(values) + 5)
         if shrunk_score <= Decimal("0.005"):
             continue
         if len(values) >= 8 and shrunk_score >= Decimal("0.050"):
@@ -158,7 +182,7 @@ def _strength_profile(
                 "nameEn": tag.name_en,
                 "nameZhHans": tag.name_zh_hans,
                 "sampleCount": len(values),
-                "meanResidual": raw_mean.quantize(Decimal("0.0001")),
+                "meanResidual": relative_mean.quantize(Decimal("0.0001")),
                 "score": shrunk_score.quantize(Decimal("0.0001")),
                 "confidence": confidence,
             }
@@ -178,10 +202,11 @@ def _outside_candidate_sort_key(candidate: dict[str, object]) -> tuple[object, .
     assert isinstance(evidence, dict)
     return (
         int(evidence["comfortTier"]),
+        -Decimal(str(evidence["hitRate"])),
+        -int(evidence.get("sampleCount", 0)),
+        0 if candidate["communityDifficulty"] == "water" else 1,
         0 if candidate["recommendationBasis"] == "personalized" else 1,
         -int(candidate["conditionalGain"]),
-        0 if candidate["communityDifficulty"] == "water" else 1,
-        -Decimal(str(evidence["hitRate"])),
         -Decimal(str(candidate["personalFitScore"])),
         Decimal(str(candidate["targetAchievement"])),
         Decimal(str(candidate["constant"])),
@@ -198,15 +223,33 @@ def _community_difficulty(candidate_tags: list[TagFact]) -> str:
     return "neutral"
 
 
+def _proven_ceiling(
+    observations: list[ObservedScore],
+    bucket: str,
+    target: Decimal,
+) -> Decimal | None:
+    constants = [
+        item.constant
+        for item in observations
+        if item.bucket == bucket and item.achievement >= target
+    ]
+    return max(constants) if constants else None
+
+
 def _target_evidence(
     observations: list[ObservedScore],
+    bucket: str,
     constant: Decimal,
     target: Decimal,
     candidate_tags: list[TagFact],
 ) -> dict[str, object] | None:
-    exact = [item for item in observations if item.constant == constant]
+    exact = [
+        item for item in observations if item.bucket == bucket and item.constant == constant
+    ]
     comparable = exact or [
-        item for item in observations if abs(item.constant - constant) <= Decimal("0.1")
+        item
+        for item in observations
+        if item.bucket == bucket and abs(item.constant - constant) <= Decimal("0.1")
     ]
     hits = sum(item.achievement >= target for item in comparable)
     is_water = _community_difficulty(candidate_tags) == "water"
@@ -251,7 +294,7 @@ def _select_diverse_candidates(
         selected_songs.add(title)
         constant_counts[constant] = constant_counts.get(constant, 0) + 1
         if len(selected) >= limit:
-            return selected
+            return sorted(selected, key=_outside_candidate_sort_key)
 
     for candidate in deferred:
         title = str(candidate["title"])
@@ -261,7 +304,7 @@ def _select_diverse_candidates(
         selected_songs.add(title)
         if len(selected) >= limit:
             break
-    return selected
+    return sorted(selected, key=_outside_candidate_sort_key)
 
 
 def build_recommendations(
@@ -297,10 +340,67 @@ def build_recommendations(
         )
         for bucket in ("b35", "b15")
     }
-    observations = [
-        ObservedScore(entry.bucket, entry.chart_constant, entry.achievement)
+    policy = _version_policy(session, snapshot)
+    b50_samples = [
+        PerformanceSample(
+            chart_id=entry.chart_id,
+            bucket=entry.bucket,
+            constant=entry.chart_constant,
+            achievement=entry.achievement,
+        )
         for entry in entries
-        if entry.chart_constant is not None and entry.achievement is not None
+        if entry.chart_id is not None
+        and entry.chart_constant is not None
+        and entry.achievement is not None
+    ]
+    full_scores_by_chart: dict[str, tuple[PlayerScore, Decimal, str]] = {}
+    if player_import.coverage == "full_scores":
+        full_score_rows = session.execute(
+            select(PlayerScore, ChartRevision, ChartConstant)
+            .join(
+                ChartRevision,
+                (ChartRevision.chart_id == PlayerScore.chart_id)
+                & (ChartRevision.snapshot_id == snapshot.id),
+            )
+            .join(
+                ChartConstant,
+                (ChartConstant.chart_id == PlayerScore.chart_id)
+                & (ChartConstant.snapshot_id == snapshot.id),
+            )
+            .where(
+                PlayerScore.snapshot_id == import_id,
+                PlayerScore.chart_id.is_not(None),
+                PlayerScore.match_status.in_(("matched", "matched_type_corrected")),
+                ChartRevision.is_special.is_(False),
+            )
+            .order_by(ChartConstant.confidence.desc())
+        ).all()
+        for score, revision, constant in full_score_rows:
+            if score.chart_id is None or score.chart_id in full_scores_by_chart:
+                continue
+            bucket = policy.bucket_for(revision.intl_version)
+            if bucket is None:
+                continue
+            full_scores_by_chart[score.chart_id] = (
+                score,
+                constant.constant_value,
+                bucket,
+            )
+    performance_samples = (
+        [
+            PerformanceSample(
+                chart_id=chart_id,
+                bucket=bucket,
+                constant=constant,
+                achievement=score.achievement,
+            )
+            for chart_id, (score, constant, bucket) in full_scores_by_chart.items()
+        ]
+        or b50_samples
+    )
+    observations = [
+        ObservedScore(sample.bucket, sample.constant, sample.achievement)
+        for sample in performance_samples
     ]
     cover_urls = cover_urls_for_snapshot(snapshot)
     current_chart_ids = {entry.chart_id for entry in entries if entry.chart_id}
@@ -325,7 +425,7 @@ def build_recommendations(
         tags_by_chart.setdefault(chart_id, []).append(
             TagFact(tag_id, group_id, name_en, name_zh_hans)
         )
-    residuals = _performance_residuals(entries)
+    residuals = _performance_residuals(performance_samples)
     strengths = _strength_profile(residuals, tags_by_chart)
     strengths_by_id = {int(item["tagId"]): item for item in strengths}
 
@@ -376,7 +476,6 @@ def build_recommendations(
         )
     )
 
-    policy = _version_policy(session, snapshot)
     catalog_rows = session.execute(
         select(Chart, Song, ChartRevision, ChartConstant)
         .join(Song, Song.id == Chart.song_id)
@@ -395,7 +494,9 @@ def build_recommendations(
     ).all()
     seen_charts: set[str] = set()
     outside_by_bucket: dict[str, list[dict[str, object]]] = {"b35": [], "b15": []}
-    profile_by_bucket = {bucket: _profile(entries, bucket) for bucket in ("b35", "b15")}
+    profile_by_bucket = {
+        bucket: _profile(performance_samples, bucket) for bucket in ("b35", "b15")
+    }
     for chart, song, revision, constant in catalog_rows:
         if chart.id in seen_charts:
             continue
@@ -422,12 +523,30 @@ def build_recommendations(
             (Decimal(str(item["score"])) for item in fit_reasons),
             Decimal("0"),
         )
-        target = _first_beating_target(constant.constant_value, thresholds[bucket])
+        played = full_scores_by_chart.get(chart.id)
+        current_achievement = played[0].achievement if played is not None else None
+        current_rating = (
+            calculate_chart_rating(constant.constant_value, current_achievement)
+            if current_achievement is not None
+            else None
+        )
+        target = _first_improving_target(
+            constant.constant_value,
+            thresholds[bucket],
+            current_achievement,
+        )
         if target is None:
             continue
         target_achievement, target_rating = target
+        proven_ceiling = _proven_ceiling(observations, bucket, target_achievement)
+        if (
+            proven_ceiling is None
+            or constant.constant_value > proven_ceiling + Decimal("0.1")
+        ):
+            continue
         target_evidence = _target_evidence(
             observations,
+            bucket,
             constant.constant_value,
             target_achievement,
             candidate_tags,
@@ -455,6 +574,15 @@ def build_recommendations(
                 "constant": constant.constant_value,
                 "constantConfidence": constant.confidence,
                 "constantDerivation": constant.derivation,
+                "currentAchievement": current_achievement,
+                "currentRating": current_rating,
+                "scoreStatus": (
+                    "played"
+                    if played is not None
+                    else "no_record"
+                    if full_scores_by_chart
+                    else "unknown"
+                ),
                 "targetAchievement": target_achievement,
                 "targetRating": target_rating,
                 "replacementThreshold": thresholds[bucket],
@@ -476,7 +604,14 @@ def build_recommendations(
                 "targetEvidence": target_evidence,
                 "evidence": evidence,
                 "fact": (
-                    f"未进入当前 B50；若达到 {target_achievement}% 并替换 "
+                    (
+                        f"当前成绩 {current_achievement}%；"
+                        if current_achievement is not None
+                        else "完整成绩中未找到这张谱的成绩；"
+                        if full_scores_by_chart
+                        else "未进入当前 B50；"
+                    )
+                    + f"若达到 {target_achievement}% 并替换 "
                     f"{bucket.upper()} 最低项，可条件增加 "
                     f"{target_rating - thresholds[bucket]} Rating"
                 ),
@@ -484,19 +619,25 @@ def build_recommendations(
         )
 
     outside: list[dict[str, object]] = []
-    for _bucket, candidates in outside_by_bucket.items():
-        outside.extend(_select_diverse_candidates(candidates, limit_per_bucket))
+    for bucket, candidates in outside_by_bucket.items():
+        bucket_limit = limit_per_bucket + 4 if bucket == "b15" else limit_per_bucket
+        outside.extend(_select_diverse_candidates(candidates, bucket_limit))
 
     return {
         "importId": import_id,
         "status": "experimental",
         "algorithmVersion": ALGORITHM_VERSION,
-        "coverage": "best50_only",
+        "coverage": player_import.coverage,
         "totalRating": sum(entry.calculated_rating or 0 for entry in entries),
         "thresholds": thresholds,
         "profile": profile_by_bucket,
         "personalProfile": {
-            "method": "same-bucket nearby-constant residual with sample shrinkage",
+            "method": (
+                "all matched scores: same-bucket nearby-constant residual with sample shrinkage"
+                if full_scores_by_chart
+                else "B50 only: same-bucket nearby-constant residual with sample shrinkage"
+            ),
+            "sampleCount": len(performance_samples),
             "strengths": strengths,
             "isCausal": False,
         },
@@ -509,10 +650,22 @@ def build_recommendations(
             "coverSource": "arcade-songs public cover CDN (remote, not stored locally)",
         },
         "caveats": [
-            "相近定数证据来自已筛选的 B50，不是真实成功率。",
-            "未进入当前 B50 不代表未游玩。",
+            (
+                "相近定数证据来自本次完整成绩，不是真实成功率。"
+                if full_scores_by_chart
+                else "相近定数证据来自已筛选的 B50，不是真实成功率。"
+            ),
+            (
+                "“无成绩记录”只表示本次 DX NET 导出中未找到，不等同于绝对未游玩。"
+                if full_scores_by_chart
+                else "未进入当前 B50 不代表未游玩。"
+            ),
             "榜外候选定数来自 DXRating 社区目录，需与 International 实机核对。",
-            "优势标签来自被筛选后的 B50，只表示已证明的相对表现，不代表因果能力。",
+            (
+                "优势标签来自完整成绩中的同分区、邻近定数相对表现，不代表因果能力。"
+                if full_scores_by_chart
+                else "优势标签来自被筛选后的 B50，只表示已证明的相对表现，不代表因果能力。"
+            ),
             "谱面通常包含多种元素；匹配某个标签不代表它是该谱面的唯一类型。",
             "DXRating 社区“水”标签会作为正向信号；“诈称谱”默认从上分推荐排除。",
             "超出本人已证明目标的谱面默认不推荐；社区标记为“水”时才作为低优先级例外。",

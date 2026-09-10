@@ -1,22 +1,21 @@
 'use client';
 
+/* oxlint-disable next/no-html-link-for-pages -- Full navigation is more reliable through the mobile preview gateway. */
+
 import { useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
-import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import {
   ArrowLeft,
-  CircleGauge,
   Database,
+  Download,
   Loader2,
   Music2,
-  Sparkles,
   ShieldAlert,
   Target,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-
-const API_ORIGIN = 'http://127.0.0.1:8000';
+import { API_ORIGIN } from '@/lib/api';
 
 type Evidence = {
   sampleCount: number;
@@ -65,6 +64,7 @@ type Recommendation = {
   constant: string;
   currentAchievement?: string;
   currentRating?: number;
+  scoreStatus?: 'played' | 'no_record' | 'unknown';
   targetAchievement: string;
   targetRating: number;
   replacementThreshold?: number;
@@ -84,7 +84,7 @@ type RecommendationResult = {
   importId: string;
   status: 'experimental';
   algorithmVersion: string;
-  coverage: 'best50_only';
+  coverage: 'best50_only' | 'full_scores';
   totalRating: number;
   thresholds: { b35: number; b15: number };
   profile: Record<
@@ -99,6 +99,7 @@ type RecommendationResult = {
   >;
   personalProfile: {
     method: string;
+    sampleCount: number;
     strengths: PersonalStrength[];
     isCausal: false;
   };
@@ -112,26 +113,181 @@ type RecommendationResult = {
   caveats: string[];
 };
 
-const strengthText = {
-  strong: 'B50 证据较足',
-  limited: 'B50 证据有限',
-  insufficient: 'B50 证据不足',
-};
-
-const strengthStyle = {
-  strong: 'border-lime-300/25 bg-lime-300/8 text-lime-100',
-  limited: 'border-amber-300/25 bg-amber-300/8 text-amber-100',
-  insufficient: 'border-rose-300/25 bg-rose-300/8 text-rose-100',
-};
-
-const confidenceText: Record<StrengthConfidence, string> = {
-  strong: '证据较足',
-  limited: '证据有限',
-  exploratory: '探索性',
-};
-
 function tagLabel(item: { nameEn: string; nameZhHans: string }) {
   return item.nameZhHans || item.nameEn;
+}
+
+const difficultyLabels: Record<string, string> = {
+  basic: 'BASIC',
+  advanced: 'ADVANCED',
+  expert: 'EXPERT',
+  master: 'MASTER',
+  remaster: 'Re:MASTER',
+};
+
+function compactTags(item: Recommendation) {
+  const tags = item.fitReasons?.map(tagLabel) ?? [];
+  if (item.communityDifficulty === 'water') tags.unshift('DXRating 水歌');
+  if (item.communityDifficulty === 'mine') tags.unshift('DXRating 地雷');
+  return [...new Set(tags)].slice(0, 3);
+}
+
+function fitCanvasText(context: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  if (context.measureText(text).width <= maxWidth) return text;
+  let shortened = text;
+  while (shortened.length > 1 && context.measureText(`${shortened}…`).width > maxWidth) {
+    shortened = shortened.slice(0, -1);
+  }
+  return `${shortened}…`;
+}
+
+async function loadCover(url?: string | null) {
+  if (!url) return null;
+  try {
+    const response = await fetch(url, { mode: 'cors' });
+    if (!response.ok) return null;
+    return await createImageBitmap(await response.blob());
+  } catch {
+    return null;
+  }
+}
+
+async function downloadRecommendationImage(result: RecommendationResult) {
+  const width = 1600;
+  const margin = 40;
+  const columns = 4;
+  const gap = 14;
+  const cardHeight = 150;
+  const cardWidth = (width - margin * 2 - gap * (columns - 1)) / columns;
+  const sectionHeaderHeight = 52;
+  const headerHeight = 168;
+  const footerHeight = 54;
+  const groups = (['b35', 'b15'] as const).map((bucket) => ({
+    bucket,
+    items: result.outside.filter((item) => item.bucket === bucket),
+  }));
+  const sectionHeight = (count: number) => sectionHeaderHeight + Math.ceil(count / columns) * (cardHeight + gap);
+  const height = headerHeight + groups.reduce((sum, group) => sum + sectionHeight(group.items.length), 0) + footerHeight;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('浏览器无法创建图片画布');
+
+  const covers = await Promise.all(result.outside.map((item) => loadCover(item.coverUrl)));
+  const coverMap = new Map(result.outside.map((item, index) => [item.chartId, covers[index]]));
+  const background = context.createLinearGradient(0, 0, width, height);
+  background.addColorStop(0, '#07131f');
+  background.addColorStop(0.55, '#0b1728');
+  background.addColorStop(1, '#1a0d25');
+  context.fillStyle = background;
+  context.fillRect(0, 0, width, height);
+
+  context.fillStyle = '#67e8f9';
+  context.font = '800 28px "Segoe UI", "PingFang SC", sans-serif';
+  context.fillText('MaiUp · SCORE PLAN', margin, 48);
+  context.fillStyle = '#f8fafc';
+  context.font = '900 66px "Segoe UI", "PingFang SC", sans-serif';
+  context.fillText('上分推荐', margin, 119);
+  context.textAlign = 'right';
+  context.fillStyle = '#f8fafc';
+  context.font = '900 42px Consolas, monospace';
+  context.fillText(`${result.totalRating}`, width - margin, 83);
+  context.fillStyle = '#94a3b8';
+  context.font = '700 18px "Segoe UI", "PingFang SC", sans-serif';
+  context.fillText(`当前 Rating · B35 门槛 ${result.thresholds.b35} · B15 门槛 ${result.thresholds.b15}`, width - margin, 116);
+  context.textAlign = 'left';
+
+  let top = headerHeight;
+  for (const group of groups) {
+    const accent = group.bucket === 'b35' ? '#67e8f9' : '#bef264';
+    context.fillStyle = accent;
+    context.font = '900 27px "Segoe UI", "PingFang SC", sans-serif';
+    context.fillText(`${group.bucket.toUpperCase()} · ${group.items.length} 首`, margin, top + 30);
+    const cardsTop = top + sectionHeaderHeight;
+
+    group.items.forEach((item, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const x = margin + column * (cardWidth + gap);
+      const y = cardsTop + row * (cardHeight + gap);
+      context.fillStyle = '#111d2f';
+      context.beginPath();
+      context.roundRect(x, y, cardWidth, cardHeight, 14);
+      context.fill();
+      context.fillStyle = accent;
+      context.fillRect(x, y, 7, cardHeight);
+
+      const cover = coverMap.get(item.chartId);
+      context.save();
+      context.beginPath();
+      context.roundRect(x + 17, y + 18, 82, 82, 10);
+      context.clip();
+      if (cover) {
+        context.drawImage(cover, x + 17, y + 18, 82, 82);
+      } else {
+        context.fillStyle = '#263449';
+        context.fillRect(x + 17, y + 18, 82, 82);
+      }
+      context.restore();
+
+      const contentX = x + 112;
+      const contentWidth = cardWidth - 128;
+      context.fillStyle = accent;
+      context.font = '800 14px Consolas, monospace';
+      context.fillText(`${group.bucket.toUpperCase()} #${index + 1}`, contentX, y + 21);
+      context.textAlign = 'right';
+      context.font = '900 19px Consolas, monospace';
+      context.fillText(`+${item.conditionalGain} Ra`, x + cardWidth - 14, y + 22);
+      context.textAlign = 'left';
+
+      context.fillStyle = '#f8fafc';
+      context.font = '800 18px "Segoe UI", "Yu Gothic UI", "PingFang SC", sans-serif';
+      context.fillText(fitCanvasText(context, item.title, contentWidth), contentX, y + 48);
+      context.fillStyle = '#94a3b8';
+      context.font = '700 13px "Segoe UI", "PingFang SC", sans-serif';
+      const versionText = item.version ? ` · ${item.version}` : '';
+      context.fillText(
+        fitCanvasText(
+          context,
+          `${item.chartType.toUpperCase()} · ${difficultyLabels[item.difficulty] ?? item.difficulty}${versionText} · 定数 ${item.constant}`,
+          contentWidth,
+        ),
+        contentX,
+        y + 72,
+      );
+      context.fillStyle = '#bae6fd';
+      context.font = '800 14px Consolas, monospace';
+      const current = item.currentAchievement ? `${Number(item.currentAchievement).toFixed(4)}%` : '无记录';
+      context.fillText(`当前 ${current}  →  ${Number(item.targetAchievement).toFixed(4)}%`, contentX, y + 98);
+
+      const tags = compactTags(item);
+      context.fillStyle = tags.includes('DXRating 水歌') ? '#d9f99d' : '#d8b4fe';
+      context.font = '700 13px "Segoe UI", "PingFang SC", sans-serif';
+      context.fillText(fitCanvasText(context, tags.join(' · ') || '舒适定数候选', cardWidth - 34), x + 17, y + 128);
+    });
+
+    top += sectionHeight(group.items.length);
+  }
+
+  context.fillStyle = '#64748b';
+  context.font = '600 16px "Segoe UI", "PingFang SC", sans-serif';
+  context.fillText('DXRating 社区曲库与标签 · 实验推荐', margin, height - 25);
+  context.textAlign = 'right';
+  context.fillText(new Date().toLocaleDateString('en-CA'), width - margin, height - 25);
+
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('生成 PNG 失败');
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `maiup-recommendations-${new Date().toISOString().slice(0, 10)}.png`;
+  document.body.appendChild(link);
+  link.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    link.remove();
+  }, 1000);
 }
 
 function RecommendationCard({ item }: { item: Recommendation }) {
@@ -183,6 +339,12 @@ function RecommendationCard({ item }: { item: Recommendation }) {
             {item.communityDifficulty === 'water' && (
               <Badge className="bg-lime-300 text-slate-950">DXRating 社区水歌</Badge>
             )}
+            {item.kind === 'outside_b50' && item.scoreStatus === 'played' && (
+              <Badge variant="outline" className="border-cyan-300/25 text-cyan-100">已有成绩</Badge>
+            )}
+            {item.kind === 'outside_b50' && item.scoreStatus === 'no_record' && (
+              <Badge variant="outline" className="border-white/10 text-muted-foreground">本次导出无记录</Badge>
+            )}
           </div>
           <h3 className="mt-3 line-clamp-2 break-all font-display text-lg font-bold">{item.title}</h3>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -215,44 +377,13 @@ function RecommendationCard({ item }: { item: Recommendation }) {
         </div>
       </div>
 
-      <p className="mt-3 text-xs leading-5 text-slate-200">{item.fact}</p>
-      {item.kind === 'outside_b50' && item.targetEvidence && (
-        <div className="mt-3 rounded-xl border border-cyan-300/20 bg-cyan-300/7 p-3 text-xs text-cyan-50">
-          {item.targetEvidence.basis === 'community_water_exception'
-            ? '你的 B50 尚未证明这个定数目标；仅因 DXRating 社区标记为“水”而保留，并已降低优先级。'
-            : `你的 B50 在${item.targetEvidence.basis === 'player_exact' ? '同定数' : '邻近定数'}有 ${item.targetEvidence.hitCount}/${item.targetEvidence.sampleCount} 项达到该目标。`}
-        </div>
-      )}
-      {item.kind === 'outside_b50' && item.fitReasons?.length ? (
-        <div className="mt-3 flex items-start gap-3 rounded-xl border border-lime-300/25 bg-lime-300/8 p-3 text-lime-100">
-          <Sparkles className="mt-0.5 size-5 shrink-0" />
-          <div>
-            <p className="text-sm font-black">含有你相对擅长的元素</p>
-            <p className="mt-1 text-sm font-bold">
-              {item.fitReasons.map(tagLabel).join(' · ')}
-            </p>
-            <p className="mt-1 text-xs opacity-75">
-              {item.fitReasons.map((reason) => `${tagLabel(reason)} ${reason.sampleCount} 项`).join('；')}。标签只描述其中的元素，不代表整张谱的唯一类型。
-            </p>
-          </div>
-        </div>
-      ) : item.kind === 'outside_b50' ? (
-        <div className="mt-3 flex items-start gap-3 rounded-xl border border-white/10 bg-white/4 p-3 text-slate-200">
-          <Target className="mt-0.5 size-5 shrink-0 text-cyan-200" />
-          <div>
-            <p className="text-sm font-black">舒适段补充候选</p>
-            <p className="mt-1 text-xs text-muted-foreground">未匹配当前识别出的优势元素，但你的 B50 已证明这个定数目标可达，且没有“诈称谱”标签。</p>
-          </div>
-        </div>
-      ) : (
-        <div className={`mt-3 flex items-start gap-3 rounded-xl border p-3 ${strengthStyle[item.evidence.strength]}`}>
-          <CircleGauge className="mt-0.5 size-5 shrink-0" />
-          <div>
-            <p className="text-sm font-black">{strengthText[item.evidence.strength]}</p>
-            <p className="mt-1 text-xs opacity-75">相近定数记录 {item.evidence.sampleCount} 项，其中 {item.evidence.hitCount} 项达到目标；这不是成功率。</p>
-          </div>
-        </div>
-      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {compactTags(item).map((tag) => (
+          <Badge key={tag} variant="outline" className="border-fuchsia-300/20 text-fuchsia-100">
+            {tag}
+          </Badge>
+        ))}
+      </div>
     </article>
   );
 }
@@ -261,6 +392,7 @@ export default function RecommendationsPage() {
   const params = useParams<{ importId: string }>();
   const [result, setResult] = useState<RecommendationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [imageState, setImageState] = useState<'idle' | 'generating' | 'error'>('idle');
 
   useEffect(() => {
     fetch(`${API_ORIGIN}/v1/imports/${params.importId}/recommendations?limit_per_bucket=10`)
@@ -281,13 +413,15 @@ export default function RecommendationsPage() {
     };
   }, [result]);
 
+  const fullHistory = result?.coverage === 'full_scores';
+
   if (!result) {
     return (
       <main className="grid min-h-screen place-items-center bg-background px-4 text-foreground">
         <div className="text-center">
           {error ? <ShieldAlert className="mx-auto size-8 text-amber-200" /> : <Loader2 className="mx-auto size-8 animate-spin text-cyan-300" />}
-          <p className="mt-3 text-sm text-muted-foreground">{error ?? '正在根据已确认 B50 计算候选…'}</p>
-          {error && <Link href={`/review/${params.importId}`} className="mt-4 inline-block text-sm text-cyan-200">返回 B50</Link>}
+          <p className="mt-3 text-sm text-muted-foreground">{error ?? '正在读取成绩并计算个性化候选…'}</p>
+          {error && <a href="/" className="mt-4 inline-block text-sm text-cyan-200">返回首页</a>}
         </div>
       </main>
     );
@@ -297,23 +431,45 @@ export default function RecommendationsPage() {
     <main className="min-h-screen overflow-x-hidden bg-background px-4 py-6 text-foreground sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl">
         <header className="border-b border-white/8 pb-6">
-          <Link href={`/review/${params.importId}`} className="inline-flex items-center gap-2 text-sm text-cyan-200 hover:text-cyan-100">
-            <ArrowLeft className="size-4" /> 返回已确认 B50
-          </Link>
+          <a href={fullHistory ? `/scores/${params.importId}` : `/review/${params.importId}`} className="inline-flex items-center gap-2 text-sm text-cyan-200 hover:text-cyan-100">
+            <ArrowLeft className="size-4" /> {fullHistory ? '返回完整成绩报告' : '返回已确认 B50'}
+          </a>
           <div className="mt-4 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
             <div>
               <div className="flex items-center gap-2">
-                <p className="eyebrow">EXPERIMENTAL V0.6</p>
+                <p className="eyebrow">EXPERIMENTAL V0.7</p>
                 <Badge className="bg-amber-300 text-slate-950">实验推荐</Badge>
+                <Badge variant="outline" className="border-cyan-300/25 text-cyan-100">
+                  {fullHistory ? `完整成绩 ${result.personalProfile.sampleCount} 张` : '仅 B50'}
+                </Badge>
               </div>
               <h1 className="mt-2 font-display text-3xl font-black tracking-tight sm:text-4xl">你的首版上分候选</h1>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                榜外先确认你在同定数或邻近定数证明过目标成绩，再比较实际加分和擅长元素。
+                {fullHistory
+                  ? '官方 B50 决定替换门槛；完整成绩用于判断舒适段、当前分数和相对擅长元素。'
+                  : '榜外先确认你在同定数或邻近定数证明过目标成绩，再比较实际加分和擅长元素。'}
               </p>
             </div>
-            <div className="rounded-2xl border border-cyan-300/15 bg-cyan-300/6 px-5 py-4">
-              <p className="text-xs text-muted-foreground">当前总 Rating</p>
-              <p className="mt-1 text-3xl font-black text-cyan-200">{result.totalRating}</p>
+            <div className="flex flex-col gap-3">
+              <div className="rounded-2xl border border-cyan-300/15 bg-cyan-300/6 px-5 py-4">
+                <p className="text-xs text-muted-foreground">当前总 Rating</p>
+                <p className="mt-1 text-3xl font-black text-cyan-200">{result.totalRating}</p>
+              </div>
+              <button
+                type="button"
+                disabled={imageState === 'generating'}
+                onClick={() => {
+                  setImageState('generating');
+                  void downloadRecommendationImage(result)
+                    .then(() => setImageState('idle'))
+                    .catch(() => setImageState('error'));
+                }}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-fuchsia-300 px-5 text-sm font-bold text-slate-950 hover:bg-fuchsia-200 disabled:opacity-50"
+              >
+                <Download className="size-4" />
+                {imageState === 'generating' ? '正在生成图片…' : '下载推荐 PNG'}
+              </button>
+              {imageState === 'error' && <p className="text-xs text-rose-300">图片生成失败，请检查网络后重试。</p>}
             </div>
           </div>
         </header>
@@ -322,7 +478,7 @@ export default function RecommendationsPage() {
           {(['b35', 'b15'] as const).map((bucket) => (
             <div key={bucket} className="rounded-2xl border border-white/8 bg-card/55 p-5">
               <div className="flex items-center justify-between">
-                <h2 className="font-display text-xl font-bold">{bucket.toUpperCase()} 已证明范围</h2>
+                <h2 className="font-display text-xl font-bold">{bucket.toUpperCase()} {fullHistory ? '成绩范围' : '已证明范围'}</h2>
                 <span className="font-bold text-cyan-200">门槛 {result.thresholds[bucket]}</span>
               </div>
               <p className="mt-3 text-sm text-muted-foreground">
@@ -332,40 +488,13 @@ export default function RecommendationsPage() {
           ))}
         </section>
 
-        <section className="mt-6 rounded-2xl border border-lime-300/15 bg-lime-300/5 p-5">
-          <div className="flex items-center gap-2">
-            <Sparkles className="size-5 text-lime-200" />
-            <h2 className="font-display text-xl font-bold">从 B50 推断的相对擅长元素</h2>
-          </div>
-          {result.personalProfile.strengths.length ? (
-            <div className="mt-4 flex flex-wrap gap-3">
-              {result.personalProfile.strengths.map((strength) => (
-                <div key={strength.tagId} className="min-w-44 rounded-xl border border-white/8 bg-slate-950/35 px-4 py-3">
-                  <p className="font-bold text-lime-100">{tagLabel(strength)}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {strength.sampleCount} 项 · 相近定数平均高 {strength.meanResidual}% · {confidenceText[strength.confidence]}
-                  </p>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="mt-3 text-sm text-muted-foreground">这张 B50 还没有形成达到最低样本量的优势标签。</p>
-          )}
-          <p className="mt-3 text-xs leading-5 text-amber-100/75">
-            只比较同分区、定数相差不超过 0.2 的 B50 成绩，并对小样本降权；一张谱通常包含多种元素，单个标签不等于整张谱的类型。
-          </p>
-          <p className="mt-2 text-xs leading-5 text-muted-foreground">
-            当前 B50 的成绩已经一起用于判断舒适定数、目标达成依据和擅长元素，因此不再逐首重复展开推荐卡。
-          </p>
-        </section>
-
         <section className="mt-10">
           <div className="flex items-center gap-3">
             <Target className="size-5 text-lime-200" />
             <div>
               <p className="eyebrow">CONDITIONAL CANDIDATES</p>
               <h2 className="font-display text-2xl font-bold">值得尝试的榜外谱面</h2>
-              <p className="mt-1 text-sm text-amber-100/80">先展示优势元素匹配，再用舒适段内、目标可达且非诈称的谱面补足数量；社区“水”标签会标绿。</p>
+              <p className="mt-1 text-sm text-amber-100/80">按推荐顺序排列；B15 提供更多候选。</p>
             </div>
           </div>
           {(['b35', 'b15'] as const).map((bucket) => (

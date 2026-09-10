@@ -137,6 +137,7 @@ class CompleteScoreBest50Entry(BaseModel):
     title: str
     chart_type: str = Field(alias="chartType")
     difficulty: str
+    version: str | None
     achievement: Decimal
     rating: int
     constant: Decimal

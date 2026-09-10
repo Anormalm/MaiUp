@@ -17,6 +17,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
+import { API_ORIGIN } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 const phases = [
@@ -70,9 +71,18 @@ export default function Home() {
       const response = await fetch('/maiup-dxnet-export.js', { cache: 'no-store' });
       if (!response.ok) throw new Error('无法加载导出脚本');
       const source = await response.text();
-      const singleLineSource = source.replace(/\r?\n/g, ' ');
-      await navigator.clipboard.writeText(`javascript:${singleLineSource}`);
-      setBookmarkletMessage('已复制。新建浏览器书签，把内容粘贴到网址栏。');
+      const isLocalPreview = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+      const bookmarklet = isLocalPreview
+        ? `javascript:${source.replace(/\r?\n/g, ' ')}`
+        : `javascript:(()=>{const s=document.createElement('script');s.src=${JSON.stringify(
+            new URL('/maiup-dxnet-export.js', window.location.origin).href,
+          )}+'?v='+Date.now();s.onerror=()=>alert('MaiUp exporter failed to load.');document.head.append(s)})()`;
+      await navigator.clipboard.writeText(bookmarklet);
+      setBookmarkletMessage(
+        isLocalPreview
+          ? '已复制。新建浏览器书签，把内容粘贴到网址栏。'
+          : '已复制手机兼容版。保存为书签后，在已登录的 DX NET 页面运行。',
+      );
     } catch (error: unknown) {
       setBookmarkletMessage(error instanceof Error ? error.message : '复制失败');
     }
@@ -86,7 +96,7 @@ export default function Home() {
     try {
       if (file.size > 5 * 1024 * 1024) throw new Error('JSON 文件不能超过 5 MB');
       const payload: unknown = JSON.parse(await file.text());
-      const response = await fetch('http://127.0.0.1:8000/v1/imports/scores', {
+      const response = await fetch(`${API_ORIGIN}/v1/imports/scores`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -120,7 +130,7 @@ export default function Home() {
     const body = new FormData();
     body.append('image', selectedFile);
     try {
-      const response = await fetch('http://127.0.0.1:8000/v1/imports/b50/inspect', {
+      const response = await fetch(`${API_ORIGIN}/v1/imports/b50/inspect`, {
         method: 'POST',
         body,
       });
@@ -151,7 +161,7 @@ export default function Home() {
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch('http://127.0.0.1:8000/v1/catalog/status', { signal: controller.signal })
+    fetch(`${API_ORIGIN}/v1/catalog/status`, { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error(`catalog status ${response.status}`);
         return response.json() as Promise<CatalogStatus>;

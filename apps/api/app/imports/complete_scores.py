@@ -471,6 +471,16 @@ def get_complete_score_import(session: Session, import_id: str) -> dict[str, obj
             )
         ).all()
     )
+    chart_versions = dict(
+        session.execute(
+            select(ChartRevision.chart_id, ChartRevision.intl_version).where(
+                ChartRevision.snapshot_id == snapshot.catalog_snapshot_id,
+                ChartRevision.chart_id.in_(
+                    entry.chart_id for entry in best50_entries if entry.chart_id is not None
+                ),
+            )
+        ).all()
+    )
     cover_urls = cover_urls_for_snapshot(session.get(CatalogSnapshot, snapshot.catalog_snapshot_id))
     has_complete_b50 = len(best50_entries) == 50
     b35_rating = sum(
@@ -532,6 +542,7 @@ def get_complete_score_import(session: Session, import_id: str) -> dict[str, obj
                 "title": entry.title,
                 "chartType": entry.chart_type,
                 "difficulty": entry.difficulty,
+                "version": chart_versions.get(entry.chart_id),
                 "achievement": entry.achievement,
                 "rating": entry.calculated_rating,
                 "constant": entry.chart_constant,

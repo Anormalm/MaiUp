@@ -1,8 +1,9 @@
 'use client';
 
+/* oxlint-disable next/no-html-link-for-pages -- Full navigation is more reliable through the mobile preview gateway. */
+
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
-import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import {
   ArrowLeft,
@@ -17,8 +18,7 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-
-const API_ORIGIN = 'http://127.0.0.1:8000';
+import { API_ORIGIN } from '@/lib/api';
 
 type ScorePreview = {
   title: string;
@@ -55,6 +55,7 @@ type ScoreImportReport = {
     title: string;
     chartType: string;
     difficulty: string;
+    version: string | null;
     achievement: string;
     rating: number;
     constant: string;
@@ -197,8 +198,13 @@ async function downloadBest50Image(report: ScoreImportReport) {
       context.fillText(`${Number(entry.achievement).toFixed(4)}%`, textX, y + 58);
       context.fillStyle = '#94a3b8';
       context.font = '600 13px "Segoe UI", sans-serif';
+      const versionText = entry.version ? ` · ${entry.version}` : '';
       context.fillText(
-        `${entry.chartType.toUpperCase()} · ${difficultyLabels[entry.difficulty] ?? entry.difficulty}`,
+        clippedText(
+          context,
+          `${entry.chartType.toUpperCase()} · ${difficultyLabels[entry.difficulty] ?? entry.difficulty}${versionText}`,
+          textWidth,
+        ),
         textX,
         y + 80,
       );
@@ -263,9 +269,9 @@ export default function ScoreImportReportPage() {
           <TriangleAlert className="mx-auto size-10 text-rose-300" />
           <h1 className="mt-4 text-2xl font-bold">导入报告读取失败</h1>
           <p className="mt-2 text-sm text-muted-foreground">{error}</p>
-          <Link href="/" className="mt-6 inline-flex items-center gap-2 text-sm text-cyan-200">
+          <a href="/" className="mt-6 inline-flex items-center gap-2 text-sm text-cyan-200">
             <ArrowLeft className="size-4" /> 返回重新导入
-          </Link>
+          </a>
         </div>
       </main>
     );
@@ -288,9 +294,9 @@ export default function ScoreImportReportPage() {
   return (
     <main className="min-h-screen bg-background px-5 py-8 text-foreground sm:px-8">
       <div className="mx-auto max-w-6xl">
-        <Link href="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-cyan-200">
+        <a href="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-cyan-200">
           <ArrowLeft className="size-4" /> 返回首页
-        </Link>
+        </a>
 
         <section className="mt-6 overflow-hidden rounded-[2rem] border border-white/10 bg-card/75 p-6 sm:p-9">
           <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
@@ -348,9 +354,15 @@ export default function ScoreImportReportPage() {
 
         <section className="mt-6 rounded-3xl border border-lime-300/15 bg-lime-300/5 p-6 sm:flex sm:items-center sm:justify-between sm:gap-6">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-lime-200">Automatic B50</p>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-lime-200">
+              {report.b50Source === 'official_dxnet' ? 'Official DX NET B50' : 'Calculated B50 fallback'}
+            </p>
             <h2 className="mt-2 font-display text-2xl font-bold">
-              {report.b50Generated ? '已从完整成绩生成 B35 / B15' : '完整成绩不足以生成完整 B50'}
+              {report.b50Generated
+                ? report.b50Source === 'official_dxnet'
+                  ? '已采用 DX NET 官网 B35 / B15'
+                  : '官网榜单未读取，已临时重算 B35 / B15'
+                : '完整成绩不足以生成完整 B50'}
             </h2>
             {report.b50Generated && (
               <p className="mt-3 font-mono text-2xl font-black text-white">
@@ -373,12 +385,12 @@ export default function ScoreImportReportPage() {
             )}
           </div>
           {report.recommendationUrl && (
-            <Link
+            <a
               href={report.recommendationUrl}
               className="mt-5 inline-flex min-h-11 items-center justify-center rounded-xl bg-lime-300 px-5 text-sm font-bold text-slate-950 hover:bg-lime-200 sm:mt-0"
             >
-              继续推荐（当前先用自动 B50）
-            </Link>
+              {report.b50Source === 'official_dxnet' ? '使用官网 B50 继续推荐' : '使用临时计算 B50 继续推荐'}
+            </a>
           )}
         </section>
 

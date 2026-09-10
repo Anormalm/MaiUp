@@ -6,17 +6,17 @@ MaiUp is a local-first score analysis and personalized song recommendation tool 
 
 - **Catalog:** synchronizes International songs and charts from the public DXRating catalog, stores immutable source snapshots by content hash, validates them, and only publishes accepted snapshots to SQLite.
 - **Rating engine:** uses `Decimal` arithmetic for coefficient boundaries, flooring, the 100.5% cap, AP/AP+ bonuses, and dynamic B35/B15 construction. The B15 window is derived from the configured current version rather than hard-coded version names.
-- **Two explicit import modes:** a PNG/JPEG B50 image provides a fast B50-only workflow, while a complete DX NET JSON preserves the full score history and automatically reconstructs B35/B15 from the active International catalog. Using every imported score in recommendation ranking is the next algorithm stage.
+- **Two explicit import modes:** a PNG/JPEG B50 image provides a fast B50-only workflow, while a complete DX NET JSON preserves the full score history, imports the official B35/B15 list, and enables full-history recommendation evidence.
 - **B50 image import:** runs RapidOCR locally. It matches title, Achievement, rank, displayed chart constant, chart Rating, FC/FC+, chart type, difficulty, and B35/B15 position. Blue Sync markers are intentionally ignored.
 - **Review workflow:** low-confidence fields remain editable and all 50 entries must be confirmed before analysis. Confirmed imports are immutable.
-- **Experimental recommendations:** `b50-personal-fit-v0.6` first checks whether the player has demonstrated the target Achievement at the same or a nearby chart constant. It then prioritizes matching chart elements, conditional Rating gain, and DXRating community difficulty signals.
+- **Experimental recommendations:** `full-history-personal-fit-v0.7` uses all matched scores when available to estimate target attainment at the same or a nearby chart constant, compare chart-element performance, and retain the current score for played charts outside B50. Official B35/B15 still determines replacement thresholds and total Rating.
 - **Community difficulty tags:** DXRating `Overrated` is treated as a positive “water chart” signal. `Underrated` is treated as a risky or deceptively difficult chart signal and excluded from ordinary score-improvement recommendations.
-- **Recommendation focus:** the page prioritizes charts outside the current B50, with up to ten candidates per bucket. Existing B50 entries are used as combined evidence for comfort range, target attainment, and chart-element analysis rather than repeated as full recommendation cards.
+- **Recommendation focus:** the page prioritizes charts outside the current B50, orders the selected set by empirical attainment evidence before conditional gain, caps community “water chart” exceptions near a demonstrated target ceiling, and allocates additional candidates to B15. Missing full-history records are labeled as absent from the export rather than definitively unplayed.
 - **Complete-score foundation:** the local API accepts a versioned International score JSON, matches song/chart identities against the active catalog, safely corrects an incorrect DX/STD source label only when the title and difficulty identify one unique chart, keeps the highest Achievement for duplicate charts, reports unmatched records, and builds a confirmed B35/B15 recommendation input when 50 eligible charts are available.
 - **DX NET user-side export:** an opt-in bookmarklet reads played charts across all five difficulty pages plus the official `Rating Target Music` B35/B15 inside the authenticated International DX NET session and downloads a local JSON file. A complete 35+15 official list is used directly; local B50 reconstruction is only a visibly labeled fallback. The exporter does not read or transmit account credentials or session cookies.
 - **Visual B50 report:** matched B35/B15 entries include cover thumbnails, exact four-decimal Achievement, chart constant, single-chart Rating, and FC status. The report can render a five-column B35/B15 PNG locally in the browser without storing the generated image.
 
-Calibrated success probabilities, objective chart-difficulty ordering, and dynamic `+10 Rating` plans remain disabled until complete score histories or a larger real-world validation set are available.
+Calibrated success probabilities, objective chart-difficulty ordering, and dynamic `+10 Rating` plans remain disabled until a larger real-world validation set is available. The displayed attainment percentage is an empirical ratio from comparable personal scores, not a predicted probability.
 
 ## Data snapshot and limitations
 
@@ -65,7 +65,7 @@ npx.cmd oxlint app types
 npm.cmd run build
 ```
 
-Current automated validation: **56 backend tests pass**, the application-owned frontend code passes targeted linting, and the production frontend build succeeds. The scaffold still contains unused shadcn components with upstream accessibility lint findings, so a full-directory `npm run lint` is not yet green.
+Current automated validation: **59 backend tests pass**, the application-owned frontend code passes targeted linting, and the production frontend build succeeds. The scaffold still contains unused shadcn components with upstream accessibility lint findings, so a full-directory `npm run lint` is not yet green.
 
 ## Real-image validation
 

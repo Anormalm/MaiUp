@@ -5,7 +5,9 @@ from app.recommendations.service import (
     TagFact,
     _community_difficulty,
     _first_beating_target,
+    _first_improving_target,
     _outside_candidate_sort_key,
+    _proven_ceiling,
     _select_diverse_candidates,
     _similar_evidence,
     _strength_profile,
@@ -17,6 +19,13 @@ def test_first_beating_target_uses_the_lower_sufficient_achievement() -> None:
     assert _first_beating_target(Decimal("14.0"), 300) == (Decimal("100.0000"), 302)
     assert _first_beating_target(Decimal("13.4"), 300) == (Decimal("100.5000"), 301)
     assert _first_beating_target(Decimal("13.0"), 300) is None
+
+
+def test_first_improving_target_never_recommends_a_score_already_achieved() -> None:
+    assert _first_improving_target(
+        Decimal("13.8"), 290, Decimal("100.1234")
+    ) == (Decimal("100.5000"), 310)
+    assert _first_improving_target(Decimal("13.8"), 290, Decimal("100.5000")) is None
 
 
 def test_similar_evidence_is_not_reported_as_success_probability() -> None:
@@ -64,7 +73,7 @@ def test_strength_profile_uses_style_tags_and_shrinks_small_samples() -> None:
     assert strengths[0]["confidence"] == "exploratory"
 
 
-def test_outside_candidates_prioritize_rating_gain_before_tag_fit() -> None:
+def test_outside_candidates_prioritize_empirical_attainability_before_gain() -> None:
     low_gain_high_fit = {
         "title": "14.0 bird",
         "constant": Decimal("14.0"),
@@ -91,7 +100,7 @@ def test_outside_candidates_prioritize_rating_gain_before_tag_fit() -> None:
         key=_outside_candidate_sort_key,
     )
 
-    assert ordered[0]["title"] == "13.6 bird plus"
+    assert ordered[0]["title"] == "14.0 bird"
 
 
 def test_outside_selection_caps_each_constant_before_filling_deferred_slots() -> None:
@@ -130,11 +139,12 @@ def test_target_evidence_rejects_unproven_target_unless_chart_is_water() -> None
     water_tag = TagFact(2, 2, "Overrated", "水")
 
     assert _target_evidence(
-        observations, Decimal("13.9"), Decimal("100.5"), [style_tag]
+        observations, "b35", Decimal("13.9"), Decimal("100.5"), [style_tag]
     ) is None
 
     exception = _target_evidence(
         observations,
+        "b35",
         Decimal("13.9"),
         Decimal("100.5"),
         [style_tag, water_tag],
@@ -142,6 +152,33 @@ def test_target_evidence_rejects_unproven_target_unless_chart_is_water() -> None
     assert exception is not None
     assert exception["comfortTier"] == 1
     assert exception["basis"] == "community_water_exception"
+
+
+def test_target_evidence_does_not_mix_b35_and_b15_samples() -> None:
+    observations = [
+        ObservedScore("b15", Decimal("13.7"), Decimal("100.5000")),
+        ObservedScore("b35", Decimal("13.7"), Decimal("99.5000")),
+    ]
+
+    assert _target_evidence(
+        observations,
+        "b35",
+        Decimal("13.7"),
+        Decimal("100.5000"),
+        [],
+    ) is None
+
+
+def test_proven_ceiling_uses_only_scores_that_reached_the_target() -> None:
+    observations = [
+        ObservedScore("b35", Decimal("13.8"), Decimal("100.5000")),
+        ObservedScore("b35", Decimal("14.2"), Decimal("99.5000")),
+        ObservedScore("b15", Decimal("14.0"), Decimal("100.5000")),
+    ]
+
+    assert _proven_ceiling(
+        observations, "b35", Decimal("100.5000")
+    ) == Decimal("13.8")
 
 
 def test_dxrating_difficulty_tags_map_to_water_and_mine_correctly() -> None:

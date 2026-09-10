@@ -1,5 +1,9 @@
 import type { NextConfig } from 'next';
 
-const nextConfig: NextConfig = {};
+const previewHost = process.env.MAIUP_PREVIEW_HOST?.trim();
+
+const nextConfig: NextConfig = {
+  allowedDevOrigins: previewHost ? [previewHost] : [],
+};
 
 export default nextConfig;

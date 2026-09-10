@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import {
   ArrowLeft,
@@ -19,8 +18,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-
-const API_ORIGIN = 'http://127.0.0.1:8000';
+import { API_ORIGIN } from '@/lib/api';
 
 type ImportEntry = {
   slot: number;
@@ -249,9 +247,9 @@ export default function ReviewPage() {
       <div className="mx-auto max-w-[1500px]">
         <header className="flex flex-col justify-between gap-4 border-b border-white/8 pb-5 sm:flex-row sm:items-center">
           <div>
-            <Link href="/" className="inline-flex items-center gap-2 text-sm text-cyan-200 hover:text-cyan-100">
+            <a href="/" className="inline-flex items-center gap-2 text-sm text-cyan-200 hover:text-cyan-100">
               <ArrowLeft className="size-4" /> 返回上传
-            </Link>
+            </a>
             <h1 className="mt-3 font-display text-3xl font-black tracking-tight">校正你的 B50</h1>
             <p className="mt-1 text-sm text-muted-foreground">
               已自动读取 {recognizedCount}/50 项、完整匹配 {playerImport.completedCount}/50 项；只需处理标黄项目。
@@ -275,12 +273,12 @@ export default function ReviewPage() {
                 <p className="mt-1 text-sm text-muted-foreground">你仍可逐项查看识别结果，但不能再修改；这样可保证后续推荐基于同一份成绩。</p>
               </div>
             </div>
-            <Link
+            <a
               href={`/recommendations/${importId}`}
               className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-lime-300 px-4 text-sm font-bold text-slate-950 hover:bg-lime-200"
             >
               <Sparkles className="size-4" /> 查看实验版推荐
-            </Link>
+            </a>
           </div>
         )}
 
