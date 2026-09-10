@@ -64,6 +64,14 @@ def normalize_title(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split())
 
 
+def normalize_genre(value: str) -> str:
+    genre = normalize_title(value).casefold()
+    # Official International and DXRating labels for the same category.
+    if genre in {"niconico&vocaloidtm", "niconico&vocaloid", "niconico&ボーカロイド"}:
+        return "niconico"
+    return genre
+
+
 def parse_export(text: str) -> list[dict[str, object]]:
     if len(text.encode("utf-8")) > MAX_EXPORT_BYTES:
         raise PlayerImportError("Score export exceeds the 2 MB limit")
@@ -111,7 +119,12 @@ def parse_export(text: str) -> list[dict[str, object]]:
             raise PlayerImportError(f"Row {line_number}: Achievement must be between 0 and 101")
         if combo not in {"-", "FC", "FC+", "AP", "AP+"}:
             raise PlayerImportError(f"Row {line_number}: invalid FC/AP marker")
-        identity = (normalize_title(title), chart_type, difficulty)
+        identity = (
+            normalize_title(title),
+            chart_type,
+            difficulty,
+            normalize_genre(str(record.get("genre", ""))),
+        )
         if identity in identities:
             raise PlayerImportError(f"Row {line_number}: duplicate chart")
         identities.add(identity)
@@ -159,6 +172,15 @@ def create_score_export(session: Session, text: str) -> dict[str, object]:
     for record in records:
         key = (normalize_title(str(record["title"])), record["chartType"], record["difficulty"])
         candidates = index.get(key, {})
+        genre = normalize_genre(str(record.get("genre", "")))
+        if len(candidates) > 1 and genre:
+            same_genre = {
+                chart_id: candidate
+                for chart_id, candidate in candidates.items()
+                if normalize_genre(candidate[1].category) == genre
+            }
+            if same_genre:
+                candidates = same_genre
         issue = None
         if len(candidates) != 1:
             issue = "ambiguous_chart" if candidates else "chart_not_found"

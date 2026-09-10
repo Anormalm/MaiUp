@@ -128,6 +128,22 @@ creates the new table. Restart the API after updating. Databases stay out of Git
 
 ## Validation and upstream dependency
 
+Matching uses the exported genre to distinguish songs sharing a title, including
+the two songs named `Link`. The official `niconico＆VOCALOID™` category maps to
+DXRating's `niconico＆ボーカロイド`; missing or unrecognized genres never select
+an arbitrary candidate. Blank song names are legitimate and matched to the catalog.
+
+Catalog region flags can lag behind the game. Reviewed corrections live in
+`data/overrides/international_availability.json`, with chart identities, displayed
+levels, public evidence URLs and verification dates. Catalog sync includes applied
+corrections in the archived JSON and content hash, without changing constants.
+When upstream supplies International availability, its regional data takes precedence.
+The current correction covers the four DX charts of `魔理沙は大変なものを盗んでいきました`,
+verified against SEGA's International song-list JSON on 2026-09-10. Run catalog sync
+after updating this file; existing imports retain their original snapshot and need
+reimporting to use the correction. Never infer availability or constants from a
+missing match alone.
+
 Backend synthetic tests cover localized/reordered headers, optional metadata, malformed
 and oversized inputs, ambiguous/missing charts, alias duplicates, catalog
 provenance, AP+, preserving more than 50 scores, independent bucket selection,

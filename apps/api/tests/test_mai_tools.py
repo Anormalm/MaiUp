@@ -186,6 +186,32 @@ def test_ambiguous_titles_do_not_choose_first_match(session):
     assert result["entries"] == []
 
 
+def test_link_songs_are_distinguished_by_localized_genre(session):
+    for chart_id, category in (("old-chart", "niconico＆ボーカロイド"), ("new-chart", "maimai")):
+        song = session.get(Song, f"song-{chart_id}")
+        song.title = "Link"
+        song.category = category
+    session.commit()
+    table = (
+        HEADER + "\tGenre\n"
+        "Link\tDX\tMASTER\t100.5000%\t-\tniconico＆VOCALOID™\n"
+        "Link\tDX\tMASTER\t99.0000%\t-\tmaimai"
+    )
+    result = create_score_export(session, table)
+    assert result["issues"] == []
+    assert [r["chartId"] for r in result["scores"]] == ["old-chart", "new-chart"]
+    for genre in ("", "unknown"):
+        unresolved = create_score_export(
+            session, HEADER + f"\tGenre\nLink\tDX\tMASTER\t100.5000%\t-\t{genre}"
+        )
+        assert unresolved["issues"][0]["code"] == "ambiguous_chart"
+    # Different genre text must not let the same stable chart be counted twice.
+    with pytest.raises(PlayerImportError, match="duplicate chart"):
+        create_score_export(
+            session, table + "\nLink\tDX\tMASTER\t99.0000%\t-\tniconico＆ボーカロイド"
+        )
+
+
 def test_catalog_required_and_special_charts_block_confirmation(session):
     session.get(ChartRevision, ("snapshot", "old-chart")).is_special = True
     session.commit()

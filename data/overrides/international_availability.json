@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "notes": "SEGA's International music list confirms all four DX difficulties and displayed levels. DXRating lists these charts as JP-only as of verification. Constants remain community_base_fallback; no constant is overridden. CiRCLE PLUS is the chart version in DXRating and mai-tools.",
+  "overrides": [
+    {
+      "chartId": "dsht_awqnjrjctf",
+      "title": "魔理沙は大変なものを盗んでいきました",
+      "chartType": "dx",
+      "difficulty": "basic",
+      "level": "3",
+      "intlVersion": "CiRCLE PLUS",
+      "sourceUrl": "https://maimai.sega.com/assets/data/maimai_songs.json",
+      "verifiedAt": "2026-09-10"
+    },
+    {
+      "chartId": "dsht_bdx9hfy9yy",
+      "title": "魔理沙は大変なものを盗んでいきました",
+      "chartType": "dx",
+      "difficulty": "advanced",
+      "level": "6",
+      "intlVersion": "CiRCLE PLUS",
+      "sourceUrl": "https://maimai.sega.com/assets/data/maimai_songs.json",
+      "verifiedAt": "2026-09-10"
+    },
+    {
+      "chartId": "dsht_cym9refgp9",
+      "title": "魔理沙は大変なものを盗んでいきました",
+      "chartType": "dx",
+      "difficulty": "expert",
+      "level": "10",
+      "intlVersion": "CiRCLE PLUS",
+      "sourceUrl": "https://maimai.sega.com/assets/data/maimai_songs.json",
+      "verifiedAt": "2026-09-10"
+    },
+    {
+      "chartId": "dsht_rrfvv543rg",
+      "title": "魔理沙は大変なものを盗んでいきました",
+      "chartType": "dx",
+      "difficulty": "master",
+      "level": "13+",
+      "intlVersion": "CiRCLE PLUS",
+      "sourceUrl": "https://maimai.sega.com/assets/data/maimai_songs.json",
+      "verifiedAt": "2026-09-10"
+    }
+  ]
+}

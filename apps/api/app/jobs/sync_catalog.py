@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from sqlalchemy import select
 
+from app.catalog.availability import apply_availability_overrides
 from app.catalog.provider import DxRatingCatalogProvider
 from app.catalog.service import ingest_catalog
 from app.config import get_settings
@@ -22,7 +24,18 @@ async def sync_catalog() -> None:
             .order_by(CatalogSnapshot.published_at.desc())
             .limit(1)
         )
-        fetched = await DxRatingCatalogProvider(settings.dxrating_url).fetch(previous_etag)
+        availability_path = settings.intl_overrides_path.with_name(
+            "international_availability.json"
+        )
+        availability = (
+            json.loads(availability_path.read_text(encoding="utf-8"))
+            if availability_path.exists()
+            else {"schemaVersion": 1, "overrides": []}
+        )
+        # Re-evaluate local corrections even when the upstream ETag has not changed.
+        fetched = await DxRatingCatalogProvider(settings.dxrating_url).fetch(
+            None if availability.get("overrides") else previous_etag
+        )
         if fetched.status_code == 304:
             print("Catalog is unchanged (HTTP 304).")
             return
@@ -30,7 +43,7 @@ async def sync_catalog() -> None:
             raise RuntimeError("Catalog provider returned no payload")
         result = ingest_catalog(
             session,
-            fetched.payload,
+            apply_availability_overrides(fetched.payload, availability),
             source_url=settings.dxrating_url,
             current_intl_version=settings.current_intl_version,
             overrides_path=settings.intl_overrides_path,
