@@ -89,6 +89,35 @@ def test_export_size_and_row_limits():
         parse_export(HEADER + "\n" + "x\n" * 10_001)
 
 
+@pytest.mark.parametrize("title", ["", "\u3000", " "])
+def test_blank_song_names_match_the_catalog_and_preserve_export(session, title):
+    session.get(Song, "song-old-chart").title = "\u3000"
+    session.commit()
+    result = create_score_export(session, TABLE.replace("old-chart", title))
+    assert result["issues"] == []
+    assert result["scores"][0]["title"] == title
+    assert result["scores"][0]["chartId"] == "old-chart"
+    assert result["totalCount"] == 1
+    assert confirm_import(session, result["id"])["status"] == "confirmed"
+
+
+def test_blank_song_without_catalog_match_is_retained_for_review(session):
+    result = create_score_export(session, TABLE.replace("old-chart", ""))
+    assert result["scores"][0]["title"] == ""
+    assert result["issues"] == [{"row": 2, "title": "", "code": "chart_not_found"}]
+    with pytest.raises(PlayerImportError, match="unmatched"):
+        confirm_import(session, result["id"])
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement", "message"),
+    [("DX", "UTAGE", "invalid Chart 'UTAGE'"), ("MASTER", "MASTR", "invalid Difficulty 'MASTR'")],
+)
+def test_invalid_chart_fields_identify_the_field_and_value(original, replacement, message):
+    with pytest.raises(PlayerImportError, match=f"Row 2: {message}"):
+        parse_export(TABLE.replace(original, replacement))
+
+
 def test_snapshot_preserves_scores_uses_catalog_and_requires_confirmation(session):
     text = TABLE.replace("FC/AP", "FC/AP\tChart Constant\tVersion") + "\t1.0\tFAKE"
     result = create_score_export(session, text)

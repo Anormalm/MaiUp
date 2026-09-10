@@ -81,17 +81,29 @@ def parse_export(text: str) -> list[dict[str, object]]:
     records = []
     identities = set()
     for line_number, line in enumerate(lines[1:], 2):
-        cells = [cell.strip() for cell in line.split("\t")]
+        cells = line.split("\t")
         if len(cells) != len(keys) or any(len(cell) > 300 for cell in cells):
             raise PlayerImportError(f"Row {line_number}: invalid number or length of cells")
-        record: dict[str, object] = dict(zip(keys, cells, strict=True))
+        # A real song is titled U+3000; mai-tools can also export its name as empty.
+        # Preserve the title and let normalized catalog matching resolve it.
+        record: dict[str, object] = {
+            key: cell if key == "title" else cell.strip()
+            for key, cell in zip(keys, cells, strict=True)
+        }
         title = str(record["title"])
         chart_type = {"STD": "std", "DX": "dx"}.get(str(record["chartType"]).upper())
         difficulty = DIFFICULTIES.get(str(record["difficulty"]).upper())
         achievement = str(record["achievement"])
         combo = str(record["fullCombo"]).upper()
-        if not title or not chart_type or not difficulty:
-            raise PlayerImportError(f"Row {line_number}: invalid song, chart or difficulty")
+        if not chart_type:
+            raise PlayerImportError(
+                f"Row {line_number}: invalid Chart {record['chartType']!r}; expected STD or DX"
+            )
+        if not difficulty:
+            raise PlayerImportError(
+                f"Row {line_number}: invalid Difficulty {record['difficulty']!r}; "
+                "expected BASIC, ADVANCED, EXPERT, MASTER or Re:MASTER"
+            )
         if not re.fullmatch(r"\d{1,3}(?:\.\d{1,4})?%", achievement):
             raise PlayerImportError(f"Row {line_number}: invalid Achievement percentage")
         value = Decimal(achievement[:-1])
