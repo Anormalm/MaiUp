@@ -1,6 +1,13 @@
 {
   "schemaVersion": 1,
-  "updatedAt": null,
-  "source": null,
-  "overrides": []
+  "updatedAt": "2026-09-19",
+  "source": "International DX NET B50 rating cross-check",
+  "overrides": [
+    {
+      "chartId": "dsht_rhexnrc5dc",
+      "gameVersion": "CiRCLE PLUS",
+      "constant": 14.1,
+      "note": "Soteria MASTER remains 14.1 on International CiRCLE PLUS"
+    }
+  ]
 }
