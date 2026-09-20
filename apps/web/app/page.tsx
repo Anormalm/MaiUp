@@ -49,10 +49,35 @@ type ScoreImportResult = {
   issues: Array<{ sourceIndex: number; title: string; issueCode: string }>;
 };
 
+async function readApiJson<T extends object>(
+  response: Response,
+  operation: string,
+): Promise<T & { detail?: string }> {
+  const body = await response.text();
+  if (!body.trim()) {
+    throw new Error(
+      `${operation}失败：本地后端没有返回数据。请确认 8000 端口的后端 CMD 正在运行。`,
+    );
+  }
+  try {
+    return JSON.parse(body) as T & { detail?: string };
+  } catch {
+    throw new Error(
+      `${operation}失败：后端返回了无法识别的响应 (${response.status})`,
+    );
+  }
+}
+
+function localApiError(error: unknown, fallback: string): string {
+  if (error instanceof TypeError && /fetch|network/i.test(error.message)) {
+    return '无法连接本地后端。请确认 8000 端口的后端 CMD 正在运行。';
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
 function isDataSource(value: unknown): value is DataSource {
   return value === 'image' || value === 'account';
 }
-
 export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
   const scoreFileInput = useRef<HTMLInputElement>(null);
@@ -62,16 +87,25 @@ export default function Home() {
   const [uploadState, setUploadState] = useState<UploadState>('idle');
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const [scoreImportState, setScoreImportState] = useState<UploadState>('idle');
-  const [scoreImportMessage, setScoreImportMessage] = useState<string | null>(null);
-  const [scoreImportResult, setScoreImportResult] = useState<ScoreImportResult | null>(null);
-  const [bookmarkletMessage, setBookmarkletMessage] = useState<string | null>(null);
+  const [scoreImportMessage, setScoreImportMessage] = useState<string | null>(
+    null,
+  );
+  const [scoreImportResult, setScoreImportResult] =
+    useState<ScoreImportResult | null>(null);
+  const [bookmarkletMessage, setBookmarkletMessage] = useState<string | null>(
+    null,
+  );
 
   async function copyBookmarklet() {
     try {
-      const response = await fetch('/maiup-dxnet-export.js', { cache: 'no-store' });
+      const response = await fetch('/maiup-dxnet-export.js', {
+        cache: 'no-store',
+      });
       if (!response.ok) throw new Error('无法加载导出脚本');
       const source = await response.text();
-      const isLocalPreview = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+      const isLocalPreview = ['localhost', '127.0.0.1'].includes(
+        window.location.hostname,
+      );
       const bookmarklet = isLocalPreview
         ? `javascript:${source.replace(/\r?\n/g, ' ')}`
         : `javascript:(()=>{const s=document.createElement('script');s.src=${JSON.stringify(
@@ -84,7 +118,9 @@ export default function Home() {
           : '已复制手机兼容版。保存为书签后，在已登录的 DX NET 页面运行。',
       );
     } catch (error: unknown) {
-      setBookmarkletMessage(error instanceof Error ? error.message : '复制失败');
+      setBookmarkletMessage(
+        error instanceof Error ? error.message : '复制失败',
+      );
     }
   }
 
@@ -94,15 +130,17 @@ export default function Home() {
     setScoreImportMessage('正在校验并匹配谱面…');
     setScoreImportResult(null);
     try {
-      if (file.size > 5 * 1024 * 1024) throw new Error('JSON 文件不能超过 5 MB');
+      if (file.size > 5 * 1024 * 1024)
+        throw new Error('JSON 文件不能超过 5 MB');
       const payload: unknown = JSON.parse(await file.text());
       const response = await fetch(`${API_ORIGIN}/v1/imports/scores`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const result = (await response.json()) as ScoreImportResult & { detail?: string };
-      if (!response.ok) throw new Error(result.detail ?? `成绩导入失败 (${response.status})`);
+      const result = await readApiJson<ScoreImportResult>(response, '成绩导入');
+      if (!response.ok)
+        throw new Error(result.detail ?? `成绩导入失败 (${response.status})`);
       setScoreImportResult(result);
       setScoreImportState('needs-calibration');
       setScoreImportMessage(
@@ -111,7 +149,7 @@ export default function Home() {
       window.location.assign(`/scores/${result.id}`);
     } catch (error: unknown) {
       setScoreImportState('error');
-      setScoreImportMessage(error instanceof Error ? error.message : '无法读取成绩 JSON');
+      setScoreImportMessage(localApiError(error, '无法读取成绩 JSON'));
     } finally {
       if (scoreFileInput.current) scoreFileInput.current.value = '';
     }
@@ -134,7 +172,7 @@ export default function Home() {
         method: 'POST',
         body,
       });
-      const payload = (await response.json()) as {
+      const payload = await readApiJson<{
         detail?: string;
         width?: number;
         height?: number;
@@ -143,8 +181,9 @@ export default function Home() {
         autoMatchedCount?: number;
         importId?: string;
         reviewUrl?: string;
-      };
-      if (!response.ok) throw new Error(payload.detail ?? `图片检查失败 (${response.status})`);
+      }>(response, '图片检查');
+      if (!response.ok)
+        throw new Error(payload.detail ?? `图片检查失败 (${response.status})`);
       setUploadState('needs-calibration');
       setUploadMessage(
         `安全检查通过：${payload.width} × ${payload.height}。正在本机识别，已读取 ${payload.recognizedCount ?? 0} 项、自动匹配 ${payload.autoMatchedCount ?? 0} 项…`,
@@ -155,7 +194,7 @@ export default function Home() {
       window.location.assign(payload.reviewUrl);
     } catch (error: unknown) {
       setUploadState('error');
-      setUploadMessage(error instanceof Error ? error.message : '无法连接本地图片检查服务');
+      setUploadMessage(localApiError(error, '无法连接本地图片检查服务'));
     }
   }
 
@@ -168,7 +207,8 @@ export default function Home() {
       })
       .then(setCatalog)
       .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === 'AbortError') return;
+        if (error instanceof DOMException && error.name === 'AbortError')
+          return;
         setCatalog({ ready: false });
       });
     return () => controller.abort();
@@ -199,7 +239,8 @@ export default function Home() {
               typeof input === 'object' && input !== null && 'source' in input
                 ? (input as { source: unknown }).source
                 : undefined;
-            if (!isDataSource(source)) throw new Error('source must be image or account');
+            if (!isDataSource(source))
+              throw new Error('source must be image or account');
             setDataSource(source);
             return { selectedSource: source };
           },
@@ -220,15 +261,24 @@ export default function Home() {
               <span className="size-3 rounded-full bg-background shadow-[0_0_20px_var(--pulse)]" />
             </div>
             <div>
-              <p className="font-display text-lg font-extrabold tracking-tight">MaiUp</p>
-              <p className="text-xs text-muted-foreground">International Rating Lab</p>
+              <p className="font-display text-lg font-extrabold tracking-tight">
+                MaiUp
+              </p>
+              <p className="text-xs text-muted-foreground">
+                International Rating Lab
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className="hidden border-cyan-300/25 bg-cyan-300/8 text-cyan-100 sm:inline-flex">
+            <Badge
+              variant="outline"
+              className="hidden border-cyan-300/25 bg-cyan-300/8 text-cyan-100 sm:inline-flex"
+            >
               CiRCLE PLUS
             </Badge>
-            <Badge className="border-0 bg-lime-300 text-slate-950">Phase 1</Badge>
+            <Badge className="border-0 bg-lime-300 text-slate-950">
+              Phase 1
+            </Badge>
           </div>
         </header>
 
@@ -241,7 +291,9 @@ export default function Home() {
                   key={phase.label}
                   className={
                     'flex items-center gap-3 rounded-2xl px-3 py-3 ' +
-                    (phase.state === 'active' ? 'bg-cyan-300/10 text-cyan-100' : 'text-muted-foreground')
+                    (phase.state === 'active'
+                      ? 'bg-cyan-300/10 text-cyan-100'
+                      : 'text-muted-foreground')
                   }
                 >
                   <span
@@ -252,7 +304,11 @@ export default function Home() {
                         : 'border-white/12 bg-white/3')
                     }
                   >
-                    {phase.state === 'locked' ? <LockKeyhole className="size-3.5" /> : index + 1}
+                    {phase.state === 'locked' ? (
+                      <LockKeyhole className="size-3.5" />
+                    ) : (
+                      index + 1
+                    )}
                   </span>
                   <span className="text-sm font-medium">{phase.label}</span>
                 </div>
@@ -263,10 +319,17 @@ export default function Home() {
               <div className="mb-2 flex items-center justify-between text-xs">
                 <span className="text-muted-foreground">数据基础</span>
                 <span className="font-semibold text-cyan-200">
-                  {catalog?.ready ? '已通过校验' : catalog === null ? '正在连接' : '等待 API'}
+                  {catalog?.ready
+                    ? '已通过校验'
+                    : catalog === null
+                      ? '正在连接'
+                      : '等待 API'}
                 </span>
               </div>
-              <Progress value={catalog?.ready ? 50 : 24} className="h-1.5 bg-white/8 [&_[data-slot=progress-indicator]]:bg-cyan-300" />
+              <Progress
+                value={catalog?.ready ? 50 : 24}
+                className="h-1.5 bg-white/8 [&_[data-slot=progress-indicator]]:bg-cyan-300"
+              />
               <p className="mt-3 text-xs leading-5 text-muted-foreground">
                 {catalog?.ready
                   ? `${catalog.songCount?.toLocaleString()} 首国际服曲目 · ${catalog.chartCount?.toLocaleString()} 张谱面`
@@ -280,7 +343,8 @@ export default function Home() {
               <div>
                 <p className="eyebrow text-cyan-200">YOUR DATA, YOUR CLIMB</p>
                 <h1 className="mt-2 max-w-3xl font-display text-3xl font-black tracking-[-0.04em] sm:text-5xl">
-                  先把成绩读对，<span className="text-gradient">再谈适合你的上分曲。</span>
+                  先把成绩读对，
+                  <span className="text-gradient">再谈适合你的上分曲。</span>
                 </h1>
               </div>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -297,10 +361,16 @@ export default function Home() {
               className="gap-4"
             >
               <TabsList className="h-auto w-full justify-start rounded-2xl border border-white/8 bg-card/55 p-1.5 sm:w-auto">
-                <TabsTrigger value="image" className="min-h-11 gap-2 rounded-xl px-4 data-active:bg-white/10 data-active:text-white">
+                <TabsTrigger
+                  value="image"
+                  className="min-h-11 gap-2 rounded-xl px-4 data-active:bg-white/10 data-active:text-white"
+                >
                   <FileImage className="size-4" /> 仅导入 B50 图片
                 </TabsTrigger>
-                <TabsTrigger value="account" className="min-h-11 gap-2 rounded-xl px-4 data-active:bg-white/10 data-active:text-white">
+                <TabsTrigger
+                  value="account"
+                  className="min-h-11 gap-2 rounded-xl px-4 data-active:bg-white/10 data-active:text-white"
+                >
                   <Database className="size-4" /> 导入全部成绩
                 </TabsTrigger>
               </TabsList>
@@ -310,12 +380,19 @@ export default function Home() {
                   <div className="relative z-10">
                     <div className="flex items-start justify-between gap-4">
                       <div>
-                        <Badge variant="outline" className="border-lime-300/25 bg-lime-300/8 text-lime-200">
+                        <Badge
+                          variant="outline"
+                          className="border-lime-300/25 bg-lime-300/8 text-lime-200"
+                        >
                           推荐入口
                         </Badge>
-                        <h2 className="mt-4 font-display text-2xl font-bold">只用 B50 快速推荐</h2>
+                        <h2 className="mt-4 font-display text-2xl font-bold">
+                          只用 B50 快速推荐
+                        </h2>
                         <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                          上传标准 B50 成绩图，识别并校对 B35/B15 后开始推荐。速度快，但只能根据榜内 50 张谱面推断你的水平和擅长类型。
+                          上传标准 B50 成绩图，识别并校对 B35/B15
+                          后开始推荐。速度快，但只能根据榜内 50
+                          张谱面推断你的水平和擅长类型。
                         </p>
                       </div>
                       <div className="hidden size-16 place-items-center rounded-2xl border border-cyan-300/15 bg-cyan-300/8 sm:grid">
@@ -334,11 +411,19 @@ export default function Home() {
                       className="group mt-7 flex min-h-64 w-full cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed border-cyan-200/25 bg-slate-950/35 px-6 text-center transition hover:border-cyan-200/50 hover:bg-cyan-300/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300"
                     >
                       <span className="grid size-14 place-items-center rounded-2xl bg-cyan-300 text-slate-950 shadow-[0_0_40px_rgb(103_232_249/18%)] transition group-hover:-translate-y-1">
-                        {selectedFile ? <CheckCircle2 className="size-6" /> : <UploadCloud className="size-6" />}
+                        {selectedFile ? (
+                          <CheckCircle2 className="size-6" />
+                        ) : (
+                          <UploadCloud className="size-6" />
+                        )}
                       </span>
-                      <span className="mt-4 text-base font-bold">{selectedFile?.name ?? '选择或拖入 B50 图片'}</span>
+                      <span className="mt-4 text-base font-bold">
+                        {selectedFile?.name ?? '选择或拖入 B50 图片'}
+                      </span>
                       <span className="mt-1 text-sm text-muted-foreground">
-                        {selectedFile ? '图片已选中，可以先做安全检查' : 'PNG / JPEG · 暂不上传玩家账号信息'}
+                        {selectedFile
+                          ? '图片已选中，可以先做安全检查'
+                          : 'PNG / JPEG · 暂不上传玩家账号信息'}
                       </span>
                     </button>
                     <input
@@ -346,24 +431,30 @@ export default function Home() {
                       type="file"
                       accept="image/png,image/jpeg"
                       className="sr-only"
-                      onChange={(event) => chooseFile(event.target.files?.item(0) ?? null)}
+                      onChange={(event) =>
+                        chooseFile(event.target.files?.item(0) ?? null)
+                      }
                     />
 
                     <div className="mt-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
                       <p
                         className={
                           'max-w-xl text-xs leading-5 ' +
-                          (uploadState === 'error' ? 'text-rose-300' : 'text-muted-foreground')
+                          (uploadState === 'error'
+                            ? 'text-rose-300'
+                            : 'text-muted-foreground')
                         }
                       >
-                        {uploadMessage ?? '下一步：图片会在本机临时保存用于 OCR；不会上传到云端，也不会直接用未核对结果推荐。'}
+                        {uploadMessage ??
+                          '下一步：图片会在本机临时保存用于 OCR；不会上传到云端，也不会直接用未核对结果推荐。'}
                       </p>
                       <Button
                         disabled={!selectedFile || uploadState === 'uploading'}
                         onClick={inspectSelectedImage}
                         className="min-h-11 gap-2 rounded-xl bg-cyan-300 text-slate-950 hover:bg-cyan-200 disabled:opacity-45"
                       >
-                        {uploadState === 'uploading' ? '检查中…' : '检查图片'} <ArrowRight className="size-4" />
+                        {uploadState === 'uploading' ? '检查中…' : '检查图片'}{' '}
+                        <ArrowRight className="size-4" />
                       </Button>
                     </div>
                   </div>
@@ -374,12 +465,20 @@ export default function Home() {
                 <div className="rounded-[2rem] border border-fuchsia-300/15 bg-card/70 p-6 sm:p-8">
                   <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
                     <div className="max-w-2xl">
-                      <Badge variant="outline" className="border-fuchsia-300/25 bg-fuchsia-300/8 text-fuchsia-200">
+                      <Badge
+                        variant="outline"
+                        className="border-fuchsia-300/25 bg-fuchsia-300/8 text-fuchsia-200"
+                      >
                         授权研究中
                       </Badge>
-                      <h2 className="mt-4 font-display text-2xl font-bold">用全部成绩做完整分析</h2>
+                      <h2 className="mt-4 font-display text-2xl font-bold">
+                        用全部成绩做完整分析
+                      </h2>
                       <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                        从 DX NET 读取所有已游玩谱面，并优先采用官网 Rating Target 的 B35/B15。完整成绩能识别榜外成绩、舒适定数和谱面类型偏好，推荐会比只看 B50 更个性化。
+                        从 DX NET 读取所有已游玩谱面，并优先采用官网 Rating
+                        Target 的
+                        B35/B15。完整成绩能识别榜外成绩、舒适定数和谱面类型偏好，推荐会比只看
+                        B50 更个性化。
                       </p>
                       <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
                         <Button
@@ -389,23 +488,42 @@ export default function Home() {
                           className="min-h-11 gap-2 rounded-xl bg-fuchsia-300 text-slate-950 hover:bg-fuchsia-200"
                         >
                           <FileJson className="size-4" />
-                          {scoreImportState === 'uploading' ? '导入中…' : '选择成绩 JSON'}
+                          {scoreImportState === 'uploading'
+                            ? '导入中…'
+                            : '选择成绩 JSON'}
                         </Button>
                         <input
                           ref={scoreFileInput}
                           type="file"
                           accept="application/json,.json"
                           className="sr-only"
-                          onChange={(event) => void importScoreFile(event.target.files?.item(0) ?? null)}
+                          onChange={(event) =>
+                            void importScoreFile(
+                              event.target.files?.item(0) ?? null,
+                            )
+                          }
                         />
-                        <p className={scoreImportState === 'error' ? 'text-sm text-rose-300' : 'text-sm text-muted-foreground'}>
-                          {scoreImportMessage ?? '下一步会提供 DX NET 页面内运行的导出工具。'}
+                        <p
+                          className={
+                            scoreImportState === 'error'
+                              ? 'text-sm text-rose-300'
+                              : 'text-sm text-muted-foreground'
+                          }
+                        >
+                          {scoreImportMessage ??
+                            '下一步会提供 DX NET 页面内运行的导出工具。'}
                         </p>
                       </div>
                       <div className="mt-4 rounded-2xl border border-white/8 bg-white/3 p-4">
-                        <p className="text-sm font-semibold text-fuchsia-100">从 DX NET 导出</p>
+                        <p className="text-sm font-semibold text-fuchsia-100">
+                          从 DX NET 导出
+                        </p>
                         <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                          将导出脚本保存成书签。在已登录的 International DX NET 页面点击一次，它会读取全部 5 个难度和官网 B35/B15 并下载 JSON；账号凭据不会离开 DX NET。
+                          将导出脚本保存成书签。在已登录的 International DX NET
+                          页面点击一次，它会读取全部 5 个难度、官网
+                          B35/B15，以及与上分区间相关谱面的最后游玩时间并下载
+                          JSON；账号凭据不会离开 DX
+                          NET，日期读取可能需要几十秒。
                         </p>
                         <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
                           <Button
@@ -416,22 +534,44 @@ export default function Home() {
                           >
                             复制导出书签代码
                           </Button>
-                          {bookmarkletMessage && <span className="text-xs text-muted-foreground">{bookmarkletMessage}</span>}
+                          {bookmarkletMessage && (
+                            <span className="text-xs text-muted-foreground">
+                              {bookmarkletMessage}
+                            </span>
+                          )}
                         </div>
                       </div>
                       {scoreImportResult && (
                         <div className="mt-5 rounded-2xl border border-fuchsia-200/15 bg-slate-950/35 p-4">
                           <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
-                            <span>抓到 {scoreImportResult.suppliedCount} 条</span>
-                            <span className="text-lime-200">匹配 {scoreImportResult.matchedCount}</span>
-                            <span className={scoreImportResult.unmatchedCount ? 'text-amber-200' : 'text-lime-200'}>
+                            <span>
+                              抓到 {scoreImportResult.suppliedCount} 条
+                            </span>
+                            <span className="text-lime-200">
+                              匹配 {scoreImportResult.matchedCount}
+                            </span>
+                            <span
+                              className={
+                                scoreImportResult.unmatchedCount
+                                  ? 'text-amber-200'
+                                  : 'text-lime-200'
+                              }
+                            >
                               待处理 {scoreImportResult.unmatchedCount}
                             </span>
-                            <span>曲库匹配率 {(Number(scoreImportResult.coverageRatio) * 100).toFixed(1)}%</span>
+                            <span>
+                              曲库匹配率{' '}
+                              {(
+                                Number(scoreImportResult.coverageRatio) * 100
+                              ).toFixed(1)}
+                              %
+                            </span>
                           </div>
                           {scoreImportResult.issues.length > 0 && (
                             <p className="mt-3 text-xs leading-5 text-muted-foreground">
-                              首个待处理项目：{scoreImportResult.issues[0].title}（{scoreImportResult.issues[0].issueCode}）
+                              首个待处理项目：
+                              {scoreImportResult.issues[0].title}（
+                              {scoreImportResult.issues[0].issueCode}）
                             </p>
                           )}
                         </div>
@@ -459,13 +599,19 @@ export default function Home() {
                 </div>
                 <div className="rounded-2xl bg-white/4 p-4">
                   <p className="text-2xl font-black text-lime-200">B15</p>
-                  <p className="mt-1 text-xs text-muted-foreground">最新两个版本</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    最新两个版本
+                  </p>
                 </div>
               </div>
               <div className="mt-4 rounded-2xl border border-lime-300/12 bg-lime-300/5 p-4">
                 <p className="text-xs font-bold text-lime-200">当前实例</p>
-                <p className="mt-1 text-sm font-semibold">CiRCLE PLUS + CiRCLE</p>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">换代后按版本顺序自动滚动，不写死名称。</p>
+                <p className="mt-1 text-sm font-semibold">
+                  CiRCLE PLUS + CiRCLE
+                </p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  换代后按版本顺序自动滚动，不写死名称。
+                </p>
               </div>
             </div>
 
@@ -475,7 +621,12 @@ export default function Home() {
                 <h2 className="font-display text-sm font-bold">推荐护栏</h2>
               </div>
               <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
-                {['不把榜外曲写成“没玩过”', '不只按理论收益排序', '数据不足就明确说明', '定数按 International 版本取值'].map((item) => (
+                {[
+                  '不把榜外曲写成“没玩过”',
+                  '不只按理论收益排序',
+                  '数据不足就明确说明',
+                  '定数按 International 版本取值',
+                ].map((item) => (
                   <li key={item} className="flex gap-2.5">
                     <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-fuchsia-200" />
                     <span>{item}</span>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -28,13 +29,16 @@ from app.db.models import (
 )
 
 DXRATING_SOURCE_ID = "dxrating-public-catalog"
+MAITOOLS_SOURCE_ID = "mai-tools-version-catalog"
+LOCAL_OVERRIDE_SOURCE_ID = "maiup-intl-overrides"
+DIFFICULTIES = ("basic", "advanced", "expert", "master", "remaster")
 
 
 class CatalogIngestError(RuntimeError):
     pass
 
 
-def canonical_json_bytes(payload: dict[str, Any]) -> bytes:
+def canonical_json_bytes(payload: Any) -> bytes:
     return json.dumps(
         payload,
         ensure_ascii=False,
@@ -59,7 +63,9 @@ def _validate(catalog: RawCatalog, policy: VersionPolicy) -> CatalogValidation:
             if intl_version not in policy.ordered_versions:
                 errors.append(f"Unknown International version {intl_version!r} on {sheet.id}")
             if sheet.internal_level_value < 1 or sheet.internal_level_value > 15:
-                errors.append(f"Out-of-range constant {sheet.internal_level_value} on {sheet.id}")
+                errors.append(
+                    f"Out-of-range base constant {sheet.internal_level_value} on {sheet.id}"
+                )
             if sheet.note_counts.total < 0:
                 errors.append(f"Negative note count on {sheet.id}")
 
@@ -94,16 +100,143 @@ def _validate(catalog: RawCatalog, policy: VersionPolicy) -> CatalogValidation:
     )
 
 
-def _load_intl_overrides(path: Path) -> dict[str, Decimal]:
+def _load_intl_overrides(path: Path) -> dict[tuple[str, str | None], Decimal]:
     if not path.exists():
         return {}
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schemaVersion") != 1:
         raise CatalogIngestError("Unsupported International constant override schema")
     return {
-        str(item["chartId"]): Decimal(str(item["constant"]))
+        (str(item["chartId"]), item.get("gameVersion")): Decimal(str(item["constant"]))
         for item in payload.get("overrides", [])
     }
+
+
+def _normalized_title(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def _build_version_constant_index(
+    payload: list[Any],
+) -> tuple[
+    dict[tuple[str, str, str], Decimal],
+    dict[tuple[str, str, str, int], Decimal],
+    set[tuple[str, str, str]],
+]:
+    candidates: dict[tuple[str, str, str], set[Decimal]] = {}
+    debut_candidates: dict[tuple[str, str, str, int], set[Decimal]] = {}
+    for item in payload:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("name"), str)
+            or not isinstance(item.get("debut"), int)
+        ):
+            continue
+        chart_type = "dx" if item.get("dx") == 1 else "std"
+        base_values = item.get("lv")
+        if not isinstance(base_values, list):
+            continue
+        intl_values: list[Any] = []
+        intl_override = item.get("regionOverrides", {}).get("intl", {})
+        if isinstance(intl_override, dict) and isinstance(intl_override.get("lv"), list):
+            intl_values = intl_override["lv"]
+        for index, difficulty in enumerate(DIFFICULTIES):
+            raw_value = intl_values[index] if index < len(intl_values) else None
+            if not isinstance(raw_value, int | float | str) or raw_value == 0:
+                raw_value = base_values[index] if index < len(base_values) else None
+            if not isinstance(raw_value, int | float | str) or isinstance(raw_value, bool):
+                continue
+            try:
+                constant = Decimal(str(raw_value))
+            except ArithmeticError:
+                continue
+            # mai-tools uses negative numbers for estimates and zero for no regional override.
+            if constant <= 0:
+                continue
+            key = (_normalized_title(item["name"]), chart_type, difficulty)
+            candidates.setdefault(key, set()).add(constant)
+            debut_candidates.setdefault((*key, item["debut"]), set()).add(constant)
+
+    ambiguous = {key for key, values in candidates.items() if len(values) != 1}
+    return (
+        {key: next(iter(values)) for key, values in candidates.items() if len(values) == 1},
+        {key: next(iter(values)) for key, values in debut_candidates.items() if len(values) == 1},
+        ambiguous,
+    )
+
+
+def _version_constant_for(
+    title: str,
+    chart_type: str,
+    difficulty: str,
+    debut_ordinal: int,
+    constants: dict[tuple[str, str, str], Decimal],
+    debut_constants: dict[tuple[str, str, str, int], Decimal],
+) -> Decimal | None:
+    key = (_normalized_title(title), chart_type, difficulty)
+    return constants.get(key, debut_constants.get((*key, debut_ordinal)))
+
+
+def _catalog_content_hash(
+    raw_bytes: bytes,
+    intl_overrides: dict[tuple[str, str | None], Decimal],
+    version_constants_payload: list[Any],
+    version_constants_version: str,
+) -> str:
+    serialized_overrides = json.dumps(
+        [
+            {
+                "chartId": chart_id,
+                "gameVersion": game_version,
+                "constant": str(constant),
+            }
+            for (chart_id, game_version), constant in sorted(
+                intl_overrides.items(), key=lambda item: (item[0][0], item[0][1] or "")
+            )
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    version_bytes = canonical_json_bytes(version_constants_payload)
+    policy = f"maiup-catalog-policy-v5-selective-debut-match:{version_constants_version}".encode()
+    return hashlib.sha256(
+        raw_bytes + b"\n" + policy + b"\n" + serialized_overrides + b"\n" + version_bytes
+    ).hexdigest()
+
+
+def _resolve_intl_constant(
+    sheet,
+    intl_version: str,
+    intl_overrides: dict[tuple[str, str | None], Decimal],
+    version_constant: Decimal | None,
+) -> tuple[Decimal, str, Decimal, str, str]:
+    manual_override = intl_overrides.get(
+        (sheet.id, intl_version), intl_overrides.get((sheet.id, None))
+    )
+    if manual_override is not None:
+        return (
+            manual_override,
+            "intl",
+            Decimal("1.000"),
+            "validated_intl_override",
+            LOCAL_OVERRIDE_SOURCE_ID,
+        )
+    if version_constant is not None:
+        return (
+            version_constant,
+            "intl",
+            Decimal("0.950"),
+            "maitools_version_snapshot",
+            MAITOOLS_SOURCE_ID,
+        )
+    return (
+        sheet.internal_level_value,
+        "generic",
+        Decimal("0.750"),
+        "community_base_fallback",
+        DXRATING_SOURCE_ID,
+    )
 
 
 def ingest_catalog(
@@ -115,9 +248,18 @@ def ingest_catalog(
     overrides_path: Path,
     raw_catalog_dir: Path,
     etag: str | None = None,
+    version_constants_payload: list[Any],
+    version_constants_url: str,
+    version_constants_version: str,
 ) -> IngestResult:
     raw_bytes = canonical_json_bytes(payload)
-    content_hash = hashlib.sha256(raw_bytes).hexdigest()
+    intl_overrides = _load_intl_overrides(overrides_path)
+    content_hash = _catalog_content_hash(
+        raw_bytes,
+        intl_overrides,
+        version_constants_payload,
+        version_constants_version,
+    )
     existing = session.scalar(
         select(CatalogSnapshot).where(CatalogSnapshot.content_hash == content_hash)
     )
@@ -135,12 +277,65 @@ def ingest_catalog(
 
     catalog = RawCatalog.model_validate(payload)
     ordered_versions = tuple(version.version for version in catalog.versions)
+    version_ordinals = {version: ordinal for ordinal, version in enumerate(ordered_versions)}
     policy = VersionPolicy(
         ordered_versions=ordered_versions,
         current_version=current_intl_version,
         b15_version_count=2,
     )
     validation = _validate(catalog, policy)
+    if version_constants_version != current_intl_version:
+        raise CatalogIngestError(
+            "International constant snapshot version does not match the active version"
+        )
+    version_constant_index, debut_constant_index, ambiguous_constant_keys = (
+        _build_version_constant_index(version_constants_payload)
+    )
+    matched_version_constants = sum(
+        1
+        for song in catalog.songs
+        for sheet in song.sheets
+        if "intl" in sheet.server_ids
+        and _version_constant_for(
+            song.title,
+            sheet.type,
+            sheet.difficulty,
+            version_ordinals[song.version],
+            version_constant_index,
+            debut_constant_index,
+        )
+        is not None
+    )
+    if matched_version_constants < 5000:
+        raise CatalogIngestError(
+            "International version snapshot matched only "
+            f"{matched_version_constants} charts; refusing to publish mixed-version constants"
+        )
+    unresolved_ambiguous_keys = {
+        (_normalized_title(song.title), sheet.type, sheet.difficulty)
+        for song in catalog.songs
+        for sheet in song.sheets
+        if "intl" in sheet.server_ids
+        and (_normalized_title(song.title), sheet.type, sheet.difficulty) in ambiguous_constant_keys
+        and _version_constant_for(
+            song.title,
+            sheet.type,
+            sheet.difficulty,
+            version_ordinals[song.version],
+            version_constant_index,
+            debut_constant_index,
+        )
+        is None
+    }
+    if unresolved_ambiguous_keys:
+        validation = validation.model_copy(
+            update={
+                "warnings": [
+                    *validation.warnings,
+                    f"Skipped {len(unresolved_ambiguous_keys)} ambiguous version-constant keys.",
+                ]
+            }
+        )
     snapshot_id = str(uuid.uuid4())
     now = datetime.now(UTC)
 
@@ -157,6 +352,34 @@ def ingest_catalog(
             ),
         )
         session.add(source)
+
+    version_source = session.get(DataSource, MAITOOLS_SOURCE_ID)
+    if version_source is None:
+        version_source = DataSource(
+            id=MAITOOLS_SOURCE_ID,
+            name=f"mai-tools {version_constants_version} version snapshot",
+            url=version_constants_url,
+            region_scope="intl",
+            trust_level="community-versioned",
+            license_note=(
+                "Versioned community game data; upstream data and artwork rights remain separate."
+            ),
+        )
+        session.add(version_source)
+
+    override_source = session.get(DataSource, LOCAL_OVERRIDE_SOURCE_ID)
+    if override_source is None:
+        override_source = DataSource(
+            id=LOCAL_OVERRIDE_SOURCE_ID,
+            name="MaiUp validated International overrides",
+            url=overrides_path.as_posix(),
+            region_scope="intl",
+            trust_level="locally-validated",
+            license_note=(
+                "Locally maintained corrections cross-checked against International DX NET."
+            ),
+        )
+        session.add(override_source)
 
     snapshot = CatalogSnapshot(
         id=snapshot_id,
@@ -191,7 +414,6 @@ def ingest_catalog(
             stored.release_date = version.release_date
             stored.ordinal = ordinal
 
-    intl_overrides = _load_intl_overrides(overrides_path)
     international_song_ids: set[str] = set()
     international_chart_ids: set[str] = set()
 
@@ -234,13 +456,27 @@ def ingest_catalog(
                 session.add(chart)
 
             intl_version = sheet.version_for("intl")
+            version_constant = _version_constant_for(
+                raw_song.title,
+                sheet.type,
+                sheet.difficulty,
+                version_ordinals[raw_song.version],
+                version_constant_index,
+                debut_constant_index,
+            )
+            constant, region, confidence, derivation, constant_source_id = _resolve_intl_constant(
+                sheet,
+                intl_version,
+                intl_overrides,
+                version_constant,
+            )
             counts = sheet.note_counts
             session.add(
                 ChartRevision(
                     snapshot_id=snapshot_id,
                     chart_id=sheet.id,
-                    level=sheet.level,
-                    base_internal_level=sheet.internal_level_value,
+                    level=sheet.level_for("intl"),
+                    base_internal_level=constant,
                     note_designer=sheet.note_designer,
                     tap=counts.tap,
                     hold=counts.hold,
@@ -262,21 +498,16 @@ def ingest_catalog(
                     game_version=intl_version,
                 )
             )
-            constant = intl_overrides.get(sheet.id, sheet.internal_level_value)
             session.add(
                 ChartConstant(
                     snapshot_id=snapshot_id,
                     chart_id=sheet.id,
-                    region="intl" if sheet.id in intl_overrides else "generic",
-                    source_id=source.id,
+                    region=region,
+                    source_id=constant_source_id,
                     game_version=intl_version,
                     constant_value=constant,
-                    confidence=Decimal("1.000") if sheet.id in intl_overrides else Decimal("0.750"),
-                    derivation=(
-                        "validated_intl_override"
-                        if sheet.id in intl_overrides
-                        else "community_base_fallback"
-                    ),
+                    confidence=confidence,
+                    derivation=derivation,
                 )
             )
 

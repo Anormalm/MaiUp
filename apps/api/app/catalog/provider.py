@@ -10,7 +10,7 @@ import httpx
 class FetchResult:
     status_code: int
     etag: str | None
-    payload: dict[str, Any] | None
+    payload: Any | None
 
 
 class DxRatingCatalogProvider:
@@ -32,3 +32,10 @@ class DxRatingCatalogProvider:
             etag=response.headers.get("etag"),
             payload=response.json(),
         )
+
+
+class JsonCatalogProvider(DxRatingCatalogProvider):
+    """Fetch an auxiliary JSON catalog without relying on conditional requests."""
+
+    async def fetch(self) -> FetchResult:
+        return await super().fetch()

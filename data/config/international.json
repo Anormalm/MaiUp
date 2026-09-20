@@ -2,5 +2,10 @@
   "region": "intl",
   "currentVersion": "CiRCLE PLUS",
   "b15VersionCount": 2,
+  "constantSnapshot": {
+    "version": "CiRCLE PLUS",
+    "source": "mai-tools version snapshot",
+    "url": "https://myjian.github.io/Taiwan-independence/external/magic.json"
+  },
   "notes": "currentVersion is an operational setting. B15 is always derived from this version and the immediately preceding version in the ordered catalog."
 }

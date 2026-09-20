@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from statistics import median
 
@@ -20,13 +21,24 @@ from app.db.models import (
     ImportEntry,
     PlayerImport,
     PlayerScore,
+    PlayerScoreSnapshot,
     Song,
     Tag,
 )
 from app.rating.calculator import calculate_chart_rating
 
-ALGORITHM_VERSION = "full-history-personal-fit-v0.7"
-TARGET_ACHIEVEMENTS = (Decimal("100.0000"), Decimal("100.5000"))
+ALGORITHM_VERSION = "full-history-personal-fit-v0.8.1"
+TARGET_ACHIEVEMENTS = tuple(
+    Decimal(value)
+    for value in ("97.0000", "98.0000", "99.0000", "99.5000", "100.0000", "100.5000")
+)
+MIN_BREAK_DAYS = 45
+MIN_REENTRY_ACTIVE_DAYS = 3
+MIN_REENTRY_CHARTS = 20
+MAX_RECENT_CHARTS = 120
+MIN_WEAKNESS_SAMPLES = 5
+
+
 class RecommendationError(ValueError):
     pass
 
@@ -44,6 +56,18 @@ class PerformanceSample:
     bucket: str
     constant: Decimal
     achievement: Decimal
+    played_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ActivityWindow:
+    status: str
+    latest_played_at: datetime | None
+    break_threshold_days: int
+    dated_sample_count: int
+    eligible_chart_ids: frozenset[str]
+    active_day_count: int
+    post_break_chart_count: int
 
 
 @dataclass(frozen=True)
@@ -78,6 +102,115 @@ def _first_improving_target(
         if rating > threshold:
             return achievement, rating
     return None
+
+
+def _target_ladder(
+    constant: Decimal,
+    threshold: int,
+    current_achievement: Decimal | None,
+    current_rating: int | None = None,
+) -> list[dict[str, object]]:
+    baseline = max(threshold, current_rating or 0)
+    targets: list[dict[str, object]] = []
+    for achievement in TARGET_ACHIEVEMENTS:
+        if current_achievement is not None and achievement <= current_achievement:
+            continue
+        rating = calculate_chart_rating(constant, achievement)
+        if rating <= baseline:
+            continue
+        targets.append(
+            {
+                "achievement": achievement,
+                "rating": rating,
+                "gain": rating - baseline,
+            }
+        )
+    return targets
+
+
+def _utc(value: datetime) -> datetime:
+    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _activity_window(
+    samples: list[PerformanceSample],
+    exported_at: datetime,
+) -> ActivityWindow:
+    dated = [sample for sample in samples if sample.played_at is not None]
+    if not dated:
+        return ActivityWindow("unavailable", None, MIN_BREAK_DAYS, 0, frozenset(), 0, 0)
+
+    ordered = sorted(dated, key=lambda sample: _utc(sample.played_at))
+    active_dates = sorted({_utc(sample.played_at).date() for sample in ordered})
+    gaps = [
+        (active_dates[index] - active_dates[index - 1]).days
+        for index in range(1, len(active_dates))
+    ]
+    typical_gap = int(median(gaps)) if gaps else 0
+    break_threshold = max(MIN_BREAK_DAYS, typical_gap * 4)
+    latest = _utc(ordered[-1].played_at)
+    exported = _utc(exported_at)
+
+    if (exported.date() - latest.date()).days > break_threshold:
+        return ActivityWindow(
+            "inactive",
+            latest,
+            break_threshold,
+            len(dated),
+            frozenset(),
+            len(active_dates),
+            0,
+        )
+
+    latest_break_index: int | None = None
+    for index, gap in enumerate(gaps, start=1):
+        if gap > break_threshold:
+            latest_break_index = index
+
+    candidates = ordered
+    post_break_count = 0
+    if latest_break_index is not None:
+        resumed_on = active_dates[latest_break_index]
+        candidates = [
+            sample for sample in ordered if _utc(sample.played_at).date() >= resumed_on
+        ]
+        post_break_dates = {_utc(sample.played_at).date() for sample in candidates}
+        post_break_count = len(candidates)
+        if (
+            len(post_break_dates) < MIN_REENTRY_ACTIVE_DAYS
+            or post_break_count < MIN_REENTRY_CHARTS
+        ):
+            return ActivityWindow(
+                "reentry",
+                latest,
+                break_threshold,
+                len(dated),
+                frozenset(),
+                len(post_break_dates),
+                post_break_count,
+            )
+
+    if len(candidates) < MIN_REENTRY_CHARTS:
+        return ActivityWindow(
+            "insufficient",
+            latest,
+            break_threshold,
+            len(dated),
+            frozenset(),
+            len({_utc(sample.played_at).date() for sample in candidates}),
+            post_break_count,
+        )
+
+    recent = candidates[-MAX_RECENT_CHARTS:]
+    return ActivityWindow(
+        "ready",
+        latest,
+        break_threshold,
+        len(dated),
+        frozenset(sample.chart_id for sample in recent),
+        len({_utc(sample.played_at).date() for sample in recent}),
+        post_break_count,
+    )
 
 
 def _similar_evidence(
@@ -197,6 +330,77 @@ def _strength_profile(
     return strengths[:5]
 
 
+def _weakness_profile(
+    residuals: dict[str, Decimal],
+    tags_by_chart: dict[str, list[TagFact]],
+) -> list[dict[str, object]]:
+    grouped: dict[int, tuple[TagFact, list[Decimal]]] = {}
+    for chart_id, residual in residuals.items():
+        for tag in tags_by_chart.get(chart_id, []):
+            if tag.group_id not in STYLE_TAG_GROUPS:
+                continue
+            _fact, values = grouped.setdefault(tag.tag_id, (tag, []))
+            values.append(residual)
+
+    qualified = [
+        (tag, values, sum(values, Decimal("0")) / Decimal(len(values)))
+        for tag, values in grouped.values()
+        if len(values) >= MIN_WEAKNESS_SAMPLES
+    ]
+    baseline = (
+        Decimal(str(median(item[2] for item in qualified)))
+        if len(qualified) >= 3
+        else Decimal("0")
+    )
+    weaknesses: list[dict[str, object]] = []
+    for tag, values, raw_mean in qualified:
+        relative_mean = raw_mean - baseline
+        shrunk_score = relative_mean * Decimal(len(values)) / Decimal(len(values) + 5)
+        if shrunk_score >= Decimal("-0.005"):
+            continue
+        confidence = (
+            "strong"
+            if len(values) >= 8 and shrunk_score <= Decimal("-0.050")
+            else "limited"
+        )
+        weaknesses.append(
+            {
+                "tagId": tag.tag_id,
+                "nameEn": tag.name_en,
+                "nameZhHans": tag.name_zh_hans,
+                "sampleCount": len(values),
+                "meanResidual": relative_mean.quantize(Decimal("0.0001")),
+                "score": shrunk_score.quantize(Decimal("0.0001")),
+                "confidence": confidence,
+            }
+        )
+    weaknesses.sort(
+        key=lambda item: (
+            Decimal(str(item["score"])),
+            -int(item["sampleCount"]),
+            str(item["nameEn"]),
+        )
+    )
+    return weaknesses[:5]
+
+
+def _weakness_risk(
+    candidate_tags: list[TagFact],
+    weaknesses_by_id: dict[int, dict[str, object]],
+) -> tuple[str, list[dict[str, object]]]:
+    matches = [
+        weaknesses_by_id[tag.tag_id]
+        for tag in candidate_tags
+        if tag.tag_id in weaknesses_by_id
+    ]
+    matches.sort(key=lambda item: Decimal(str(item["score"])))
+    if any(item["confidence"] == "strong" for item in matches):
+        return "avoid", matches
+    if matches:
+        return "caution", matches
+    return "none", []
+
+
 def _outside_candidate_sort_key(candidate: dict[str, object]) -> tuple[object, ...]:
     evidence = candidate["targetEvidence"]
     assert isinstance(evidence, dict)
@@ -204,8 +408,12 @@ def _outside_candidate_sort_key(candidate: dict[str, object]) -> tuple[object, .
         int(evidence["comfortTier"]),
         -Decimal(str(evidence["hitRate"])),
         -int(evidence.get("sampleCount", 0)),
+        {"none": 0, "caution": 1, "avoid": 2}.get(
+            str(candidate.get("weaknessRisk", "none")), 1
+        ),
         0 if candidate["communityDifficulty"] == "water" else 1,
         0 if candidate["recommendationBasis"] == "personalized" else 1,
+        Decimal(str(candidate.get("achievementGap") or "999")),
         -int(candidate["conditionalGain"]),
         -Decimal(str(candidate["personalFitScore"])),
         Decimal(str(candidate["targetAchievement"])),
@@ -307,6 +515,29 @@ def _select_diverse_candidates(
     return sorted(selected, key=_outside_candidate_sort_key)
 
 
+def _select_candidate_mix(
+    candidates: list[dict[str, object]],
+    limit: int,
+) -> list[dict[str, object]]:
+    if limit <= 0:
+        return []
+    played = [candidate for candidate in candidates if candidate.get("scoreStatus") == "played"]
+    exploration = [
+        candidate for candidate in candidates if candidate.get("scoreStatus") != "played"
+    ]
+    played_limit = min(len(played), max(1, (limit + 1) // 2))
+    exploration_limit = min(len(exploration), limit - played_limit)
+    remaining = limit - played_limit - exploration_limit
+    if remaining:
+        played_room = max(0, len(played) - played_limit)
+        add_played = min(played_room, remaining)
+        played_limit += add_played
+        exploration_limit += min(len(exploration) - exploration_limit, remaining - add_played)
+    selected = _select_diverse_candidates(played, played_limit)
+    selected.extend(_select_diverse_candidates(exploration, exploration_limit))
+    return sorted(selected, key=_outside_candidate_sort_key)
+
+
 def build_recommendations(
     session: Session,
     import_id: str,
@@ -341,6 +572,7 @@ def build_recommendations(
         for bucket in ("b35", "b15")
     }
     policy = _version_policy(session, snapshot)
+    score_snapshot = session.get(PlayerScoreSnapshot, import_id)
     b50_samples = [
         PerformanceSample(
             chart_id=entry.chart_id,
@@ -393,6 +625,7 @@ def build_recommendations(
                 bucket=bucket,
                 constant=constant,
                 achievement=score.achievement,
+                played_at=score.played_at,
             )
             for chart_id, (score, constant, bucket) in full_scores_by_chart.items()
         ]
@@ -428,6 +661,23 @@ def build_recommendations(
     residuals = _performance_residuals(performance_samples)
     strengths = _strength_profile(residuals, tags_by_chart)
     strengths_by_id = {int(item["tagId"]): item for item in strengths}
+    activity = _activity_window(
+        performance_samples,
+        score_snapshot.exported_at if score_snapshot is not None else datetime.now(UTC),
+    )
+    recent_samples = [
+        sample for sample in performance_samples if sample.chart_id in activity.eligible_chart_ids
+    ]
+    recent_weaknesses = (
+        _weakness_profile(_performance_residuals(recent_samples), tags_by_chart)
+        if activity.status == "ready"
+        else []
+    )
+    historical_weaknesses = _weakness_profile(residuals, tags_by_chart)
+    displayed_weaknesses = (
+        recent_weaknesses if activity.status == "ready" else historical_weaknesses
+    )
+    weaknesses_by_id = {int(item["tagId"]): item for item in recent_weaknesses}
 
     in_list: list[dict[str, object]] = []
     for entry in entries:
@@ -437,10 +687,24 @@ def build_recommendations(
             or entry.calculated_rating is None
         ):
             continue
-        target = Decimal("100.5000")
-        target_rating = calculate_chart_rating(entry.chart_constant, target)
+        ladder = _target_ladder(
+            entry.chart_constant,
+            0,
+            entry.achievement,
+            entry.calculated_rating,
+        )
+        if not ladder:
+            continue
+        primary_target = ladder[0]
+        target = Decimal(str(primary_target["achievement"]))
+        target_rating = int(primary_target["rating"])
         gain = target_rating - entry.calculated_rating
         if gain <= 0:
+            continue
+        weakness_risk, weakness_reasons = _weakness_risk(
+            tags_by_chart.get(entry.chart_id or "", []), weaknesses_by_id
+        )
+        if weakness_risk == "avoid":
             continue
         evidence = _similar_evidence(observations, entry.bucket, entry.chart_constant, target)
         in_list.append(
@@ -460,6 +724,9 @@ def build_recommendations(
                 "targetRating": target_rating,
                 "conditionalGain": gain,
                 "achievementGap": target - entry.achievement,
+                "targetOptions": ladder,
+                "weaknessRisk": weakness_risk,
+                "weaknessReasons": weakness_reasons[:3],
                 "evidence": evidence,
                 "fact": (
                     f"达到 {target}% 时，按当前图片定数可从 {entry.calculated_rating} "
@@ -469,6 +736,7 @@ def build_recommendations(
         )
     in_list.sort(
         key=lambda item: (
+            1 if item["weaknessRisk"] == "caution" else 0,
             Decimal(str(item["targetAchievement"]))
             - Decimal(str(item["currentAchievement"])),
             -int(item["conditionalGain"]),
@@ -523,6 +791,11 @@ def build_recommendations(
             (Decimal(str(item["score"])) for item in fit_reasons),
             Decimal("0"),
         )
+        weakness_risk, weakness_reasons = _weakness_risk(
+            candidate_tags, weaknesses_by_id
+        )
+        if weakness_risk == "avoid":
+            continue
         played = full_scores_by_chart.get(chart.id)
         current_achievement = played[0].achievement if played is not None else None
         current_rating = (
@@ -530,14 +803,17 @@ def build_recommendations(
             if current_achievement is not None
             else None
         )
-        target = _first_improving_target(
+        ladder = _target_ladder(
             constant.constant_value,
             thresholds[bucket],
             current_achievement,
+            current_rating,
         )
-        if target is None:
+        if not ladder:
             continue
-        target_achievement, target_rating = target
+        primary_target = ladder[0]
+        target_achievement = Decimal(str(primary_target["achievement"]))
+        target_rating = int(primary_target["rating"])
         proven_ceiling = _proven_ceiling(observations, bucket, target_achievement)
         if (
             proven_ceiling is None
@@ -562,7 +838,11 @@ def build_recommendations(
         outside_by_bucket[bucket].append(
             {
                 "kind": "outside_b50",
-                "strategy": "steady" if target_achievement == Decimal("100.0000") else "sprint",
+                "strategy": (
+                    "steady"
+                    if target_achievement <= Decimal("100.0000")
+                    else "sprint"
+                ),
                 "chartId": chart.id,
                 "title": song.title,
                 "coverUrl": cover_urls.get(song.id),
@@ -585,13 +865,21 @@ def build_recommendations(
                 ),
                 "targetAchievement": target_achievement,
                 "targetRating": target_rating,
+                "targetOptions": ladder,
                 "replacementThreshold": thresholds[bucket],
                 "conditionalGain": target_rating - thresholds[bucket],
+                "achievementGap": (
+                    target_achievement - current_achievement
+                    if current_achievement is not None
+                    else None
+                ),
                 "personalFitScore": personal_fit_score.quantize(Decimal("0.0001")),
                 "recommendationBasis": (
                     "personalized" if fit_reasons else "comfort_fallback"
                 ),
                 "communityDifficulty": community_difficulty,
+                "weaknessRisk": weakness_risk,
+                "weaknessReasons": weakness_reasons[:3],
                 "fitReasons": [
                     {
                         "nameEn": item["nameEn"],
@@ -621,7 +909,7 @@ def build_recommendations(
     outside: list[dict[str, object]] = []
     for bucket, candidates in outside_by_bucket.items():
         bucket_limit = limit_per_bucket + 4 if bucket == "b15" else limit_per_bucket
-        outside.extend(_select_diverse_candidates(candidates, bucket_limit))
+        outside.extend(_select_candidate_mix(candidates, bucket_limit))
 
     return {
         "importId": import_id,
@@ -641,7 +929,30 @@ def build_recommendations(
             "strengths": strengths,
             "isCausal": False,
         },
-        "inList": in_list[:12],
+        "weaknessProfile": {
+            "status": activity.status,
+            "method": "recent active-window same-bucket nearby-constant residual",
+            "datedSampleCount": activity.dated_sample_count,
+            "eligibleSampleCount": len(activity.eligible_chart_ids),
+            "activeDayCount": activity.active_day_count,
+            "postBreakChartCount": activity.post_break_chart_count,
+            "breakThresholdDays": activity.break_threshold_days,
+            "latestPlayedAt": (
+                activity.latest_played_at.isoformat()
+                if activity.latest_played_at is not None
+                else None
+            ),
+            "weaknesses": displayed_weaknesses,
+            "basis": (
+                "recent_active_window"
+                if activity.status == "ready"
+                else "all_history_preview"
+            ),
+            "appliedToRecommendations": activity.status == "ready",
+            "isExperimental": True,
+            "usesBestScoreAsCurrentAbility": True,
+        },
+        "inList": in_list[:4],
         "outside": outside,
         "provenance": {
             "catalogSnapshotId": snapshot.id,
@@ -669,6 +980,12 @@ def build_recommendations(
             "谱面通常包含多种元素；匹配某个标签不代表它是该谱面的唯一类型。",
             "DXRating 社区“水”标签会作为正向信号；“诈称谱”默认从上分推荐排除。",
             "超出本人已证明目标的谱面默认不推荐；社区标记为“水”时才作为低优先级例外。",
+            (
+                "弱势项只使用当前活跃窗口内、带最后游玩日期的成绩；长时间停玩或回坑样本不足时自动暂停。"
+                if activity.status == "ready"
+                else "当前没有足够的近期活跃样本，弱势项过滤已暂停。"
+            ),
+            "最后游玩日期不等于该次成绩日期；弱势项仍是实验性风险提示，不是能力定论。",
             "榜外增益是假设达到目标成绩并替换当前最低项后的条件增益。",
         ],
     }

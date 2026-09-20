@@ -42,9 +42,20 @@ def _chart_indexes(
     dict[tuple[str, str, str], set[str]],
     dict[tuple[str, str], set[str]],
     dict[str, str],
+    dict[str, str],
+    dict[str, Decimal],
+    dict[str, int],
 ]:
     rows = session.execute(
-        select(Chart.id, Song.title, Chart.chart_type, Chart.difficulty)
+        select(
+            Chart.id,
+            Song.title,
+            Chart.chart_type,
+            Chart.difficulty,
+            Chart.song_id,
+            ChartRevision.level,
+            ChartRevision.total,
+        )
         .join(Song, Song.id == Chart.song_id)
         .join(
             ChartRevision,
@@ -53,7 +64,15 @@ def _chart_indexes(
         .where(ChartRevision.is_special.is_(False))
     ).all()
     aliases = session.execute(
-        select(Chart.id, SongAlias.name, Chart.chart_type, Chart.difficulty)
+        select(
+            Chart.id,
+            SongAlias.name,
+            Chart.chart_type,
+            Chart.difficulty,
+            Chart.song_id,
+            ChartRevision.level,
+            ChartRevision.total,
+        )
         .join(SongAlias, SongAlias.song_id == Chart.song_id)
         .join(
             ChartRevision,
@@ -64,18 +83,144 @@ def _chart_indexes(
     exact_index: dict[tuple[str, str, str], set[str]] = {}
     title_difficulty_index: dict[tuple[str, str], set[str]] = {}
     chart_types: dict[str, str] = {}
-    for chart_id, title, chart_type, difficulty in [*rows, *aliases]:
+    chart_song_ids: dict[str, str] = {}
+    chart_levels: dict[str, Decimal] = {}
+    chart_dx_score_max: dict[str, int] = {}
+    for chart_id, title, chart_type, difficulty, song_id, level, note_total in [
+        *rows,
+        *aliases,
+    ]:
         normalized_title = _normalized(title)
         normalized_type = chart_type.casefold()
         normalized_difficulty = difficulty.casefold()
         exact_index.setdefault(
             (normalized_title, normalized_type, normalized_difficulty), set()
         ).add(chart_id)
-        title_difficulty_index.setdefault(
-            (normalized_title, normalized_difficulty), set()
-        ).add(chart_id)
+        title_difficulty_index.setdefault((normalized_title, normalized_difficulty), set()).add(
+            chart_id
+        )
         chart_types[chart_id] = normalized_type
-    return exact_index, title_difficulty_index, chart_types
+        chart_song_ids[chart_id] = song_id
+        chart_levels[chart_id] = _displayed_level_value(level)
+        chart_dx_score_max[chart_id] = note_total * 3
+    return (
+        exact_index,
+        title_difficulty_index,
+        chart_types,
+        chart_song_ids,
+        chart_levels,
+        chart_dx_score_max,
+    )
+
+
+def _displayed_level_value(level: str) -> Decimal:
+    normalized = level.strip()
+    if normalized.endswith("+"):
+        return Decimal(normalized[:-1]) + Decimal("0.7")
+    return Decimal(normalized)
+
+
+def _source_song_candidates(
+    entries: list[OfficialBest50Entry] | list,
+    exact_index: dict[tuple[str, str, str], set[str]],
+    title_difficulty_index: dict[tuple[str, str], set[str]],
+    chart_song_ids: dict[str, str],
+    chart_levels: dict[str, Decimal],
+) -> dict[str, set[str]]:
+    grouped: dict[str, set[str]] = {}
+    for item in entries:
+        if not item.source_song_key:
+            continue
+        candidates = exact_index.get(
+            (_normalized(item.title), item.chart_type, item.difficulty), set()
+        )
+        if not candidates:
+            candidates = title_difficulty_index.get(
+                (_normalized(item.title), item.difficulty), set()
+            )
+        if item.displayed_level is not None:
+            level_matches = {
+                chart_id
+                for chart_id in candidates
+                if chart_levels.get(chart_id) == item.displayed_level
+            }
+            if level_matches:
+                candidates = level_matches
+        song_ids = {chart_song_ids[chart_id] for chart_id in candidates}
+        if not song_ids:
+            continue
+        if item.source_song_key in grouped:
+            grouped[item.source_song_key] &= song_ids
+        else:
+            grouped[item.source_song_key] = song_ids
+    return grouped
+
+
+def _title_type_song_candidates(
+    entries: list[OfficialBest50Entry] | list,
+    exact_index: dict[tuple[str, str, str], set[str]],
+    chart_song_ids: dict[str, str],
+    chart_levels: dict[str, Decimal],
+) -> dict[tuple[str, str], set[str]]:
+    grouped: dict[tuple[str, str], set[str]] = {}
+    for item in entries:
+        if item.displayed_level is None:
+            continue
+        group_key = (_normalized(item.title), item.chart_type)
+        candidates = exact_index.get((*group_key, item.difficulty), set())
+        level_matches = {
+            chart_id
+            for chart_id in candidates
+            if chart_levels.get(chart_id) == item.displayed_level
+        }
+        song_ids = {chart_song_ids[chart_id] for chart_id in level_matches}
+        if len(song_ids) == 1:
+            grouped.setdefault(group_key, set()).update(song_ids)
+    return grouped
+
+
+def _narrow_candidates(
+    candidates: set[str],
+    item,
+    chart_song_ids: dict[str, str],
+    chart_levels: dict[str, Decimal],
+    chart_dx_score_max: dict[str, int],
+    source_song_candidates: dict[str, set[str]],
+    title_type_song_candidates: dict[tuple[str, str], set[str]],
+) -> set[str]:
+    narrowed = set(candidates)
+    if item.dx_score_max is not None:
+        dx_score_matches = {
+            chart_id
+            for chart_id in narrowed
+            if chart_dx_score_max.get(chart_id) == item.dx_score_max
+        }
+        if dx_score_matches:
+            narrowed = dx_score_matches
+    if item.displayed_level is not None:
+        level_matches = {
+            chart_id for chart_id in narrowed if chart_levels.get(chart_id) == item.displayed_level
+        }
+        if level_matches:
+            narrowed = level_matches
+    if item.source_song_key:
+        song_ids = source_song_candidates.get(item.source_song_key, set())
+        if len(song_ids) == 1:
+            song_matches = {
+                chart_id for chart_id in narrowed if chart_song_ids.get(chart_id) in song_ids
+            }
+            if song_matches:
+                narrowed = song_matches
+    inferred_song_ids = title_type_song_candidates.get(
+        (_normalized(item.title), item.chart_type), set()
+    )
+    if len(inferred_song_ids) == 1:
+        song_matches = {
+            chart_id for chart_id in narrowed if chart_song_ids.get(chart_id) in inferred_song_ids
+        }
+        if song_matches:
+            narrowed = song_matches
+    return narrowed
 
 
 def _create_best50_import(
@@ -94,13 +239,11 @@ def _create_best50_import(
         .join(Song, Song.id == Chart.song_id)
         .join(
             ChartRevision,
-            (ChartRevision.chart_id == Chart.id)
-            & (ChartRevision.snapshot_id == catalog.id),
+            (ChartRevision.chart_id == Chart.id) & (ChartRevision.snapshot_id == catalog.id),
         )
         .join(
             ChartConstant,
-            (ChartConstant.chart_id == Chart.id)
-            & (ChartConstant.snapshot_id == catalog.id),
+            (ChartConstant.chart_id == Chart.id) & (ChartConstant.snapshot_id == catalog.id),
         )
         .where(Chart.id.in_(chart_ids))
         .order_by(ChartConstant.confidence.desc())
@@ -110,9 +253,7 @@ def _create_best50_import(
         metadata.setdefault(chart.id, (chart, song, revision, constant))
 
     validation = json.loads(catalog.validation_report)
-    versions = tuple(
-        session.scalars(select(GameVersion.name).order_by(GameVersion.ordinal)).all()
-    )
+    versions = tuple(session.scalars(select(GameVersion.name).order_by(GameVersion.ordinal)).all())
     current_version = validation.get("current_version")
     if not current_version or current_version not in versions:
         return False
@@ -190,6 +331,11 @@ def _create_official_best50_import(
     official_best50: list[OfficialBest50Entry],
     exact_index: dict[tuple[str, str, str], set[str]],
     title_difficulty_index: dict[tuple[str, str], set[str]],
+    chart_song_ids: dict[str, str],
+    chart_levels: dict[str, Decimal],
+    chart_dx_score_max: dict[str, int],
+    source_song_candidates: dict[str, set[str]],
+    title_type_song_candidates: dict[tuple[str, str], set[str]],
     created_at: datetime,
 ) -> bool:
     grouped = {
@@ -210,9 +356,27 @@ def _create_official_best50_import(
             candidates = exact_index.get(
                 (_normalized(item.title), item.chart_type, item.difficulty), set()
             )
+            candidates = _narrow_candidates(
+                candidates,
+                item,
+                chart_song_ids,
+                chart_levels,
+                chart_dx_score_max,
+                source_song_candidates,
+                title_type_song_candidates,
+            )
             if not candidates:
                 candidates = title_difficulty_index.get(
                     (_normalized(item.title), item.difficulty), set()
+                )
+                candidates = _narrow_candidates(
+                    candidates,
+                    item,
+                    chart_song_ids,
+                    chart_levels,
+                    chart_dx_score_max,
+                    source_song_candidates,
+                    title_type_song_candidates,
                 )
             if len(candidates) != 1:
                 return False
@@ -226,13 +390,11 @@ def _create_official_best50_import(
         .join(Song, Song.id == Chart.song_id)
         .join(
             ChartRevision,
-            (ChartRevision.chart_id == Chart.id)
-            & (ChartRevision.snapshot_id == catalog.id),
+            (ChartRevision.chart_id == Chart.id) & (ChartRevision.snapshot_id == catalog.id),
         )
         .join(
             ChartConstant,
-            (ChartConstant.chart_id == Chart.id)
-            & (ChartConstant.snapshot_id == catalog.id),
+            (ChartConstant.chart_id == Chart.id) & (ChartConstant.snapshot_id == catalog.id),
         )
         .where(Chart.id.in_(chart_ids))
         .order_by(ChartConstant.confidence.desc())
@@ -244,9 +406,7 @@ def _create_official_best50_import(
         return False
 
     validation = json.loads(catalog.validation_report)
-    versions = tuple(
-        session.scalars(select(GameVersion.name).order_by(GameVersion.ordinal)).all()
-    )
+    versions = tuple(session.scalars(select(GameVersion.name).order_by(GameVersion.ordinal)).all())
     current_version = validation.get("current_version")
     if not current_version or current_version not in versions:
         return False
@@ -315,7 +475,27 @@ def import_complete_scores(
     if catalog is None:
         raise CompleteScoreImportError("No validated International catalog is published")
 
-    exact_index, title_difficulty_index, chart_types = _chart_indexes(session, catalog.id)
+    (
+        exact_index,
+        title_difficulty_index,
+        chart_types,
+        chart_song_ids,
+        chart_levels,
+        chart_dx_score_max,
+    ) = _chart_indexes(session, catalog.id)
+    source_song_candidates = _source_song_candidates(
+        [*payload.scores, *(payload.official_best50 or [])],
+        exact_index,
+        title_difficulty_index,
+        chart_song_ids,
+        chart_levels,
+    )
+    title_type_song_candidates = _title_type_song_candidates(
+        [*payload.scores, *(payload.official_best50 or [])],
+        exact_index,
+        chart_song_ids,
+        chart_levels,
+    )
     import_id = str(uuid.uuid4())
     matched_by_chart: dict[str, PlayerScore] = {}
     stored: list[PlayerScore] = []
@@ -324,6 +504,15 @@ def import_complete_scores(
     for source_index, item in enumerate(payload.scores):
         key = (_normalized(item.title), item.chart_type, item.difficulty)
         candidates = exact_index.get(key, set())
+        candidates = _narrow_candidates(
+            candidates,
+            item,
+            chart_song_ids,
+            chart_levels,
+            chart_dx_score_max,
+            source_song_candidates,
+            title_type_song_candidates,
+        )
         resolved_chart_type = item.chart_type
         if len(candidates) == 1:
             chart_id = next(iter(candidates))
@@ -336,6 +525,15 @@ def import_complete_scores(
         else:
             fallback_candidates = title_difficulty_index.get(
                 (_normalized(item.title), item.difficulty), set()
+            )
+            fallback_candidates = _narrow_candidates(
+                fallback_candidates,
+                item,
+                chart_song_ids,
+                chart_levels,
+                chart_dx_score_max,
+                source_song_candidates,
+                title_type_song_candidates,
             )
             if len(fallback_candidates) == 1:
                 chart_id = next(iter(fallback_candidates))
@@ -406,6 +604,11 @@ def import_complete_scores(
         official_best50=payload.official_best50 or [],
         exact_index=exact_index,
         title_difficulty_index=title_difficulty_index,
+        chart_song_ids=chart_song_ids,
+        chart_levels=chart_levels,
+        chart_dx_score_max=chart_dx_score_max,
+        source_song_candidates=source_song_candidates,
+        title_type_song_candidates=title_type_song_candidates,
         created_at=imported_at,
     )
     if not official_best50_created:
@@ -484,14 +687,10 @@ def get_complete_score_import(session: Session, import_id: str) -> dict[str, obj
     cover_urls = cover_urls_for_snapshot(session.get(CatalogSnapshot, snapshot.catalog_snapshot_id))
     has_complete_b50 = len(best50_entries) == 50
     b35_rating = sum(
-        entry.calculated_rating or 0
-        for entry in best50_entries
-        if entry.bucket == "b35"
+        entry.calculated_rating or 0 for entry in best50_entries if entry.bucket == "b35"
     )
     b15_rating = sum(
-        entry.calculated_rating or 0
-        for entry in best50_entries
-        if entry.bucket == "b15"
+        entry.calculated_rating or 0 for entry in best50_entries if entry.bucket == "b15"
     )
     return {
         "id": snapshot.id,
@@ -525,9 +724,7 @@ def get_complete_score_import(session: Session, import_id: str) -> dict[str, obj
         "b35Rating": b35_rating if has_complete_b50 else None,
         "b15Rating": b15_rating if has_complete_b50 else None,
         "totalRating": b35_rating + b15_rating if has_complete_b50 else None,
-        "recommendationUrl": (
-            f"/recommendations/{import_id}" if has_complete_b50 else None
-        ),
+        "recommendationUrl": (f"/recommendations/{import_id}" if has_complete_b50 else None),
         "b50Source": (
             "official_dxnet"
             if best50_import and best50_import.source_type == "dxnet_official_b50"

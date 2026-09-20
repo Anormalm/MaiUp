@@ -13,6 +13,8 @@ DATA_ROOT = PROJECT_ROOT / "data"
 class Settings:
     database_url: str
     dxrating_url: str
+    intl_constants_url: str
+    intl_constants_version: str
     current_intl_version: str
     intl_config_path: Path
     intl_overrides_path: Path
@@ -23,6 +25,7 @@ class Settings:
 def get_settings() -> Settings:
     config_path = DATA_ROOT / "config" / "international.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
+    constant_snapshot = config["constantSnapshot"]
     default_db = (PROJECT_ROOT / "apps" / "api" / "maiup.db").as_posix()
     return Settings(
         database_url=os.getenv("MAIUP_DATABASE_URL", f"sqlite:///{default_db}"),
@@ -30,6 +33,11 @@ def get_settings() -> Settings:
             "MAIUP_DXRATING_URL",
             "https://miruku.dxrating.net/api/v1/dxdata",
         ),
+        intl_constants_url=os.getenv(
+            "MAIUP_INTL_CONSTANTS_URL",
+            constant_snapshot["url"],
+        ),
+        intl_constants_version=constant_snapshot["version"],
         current_intl_version=os.getenv(
             "MAIUP_CURRENT_INTL_VERSION",
             config["currentVersion"],

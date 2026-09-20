@@ -42,6 +42,19 @@ class Sheet(BaseModel):
         override = self.server_overrides.get(region, {})
         return str(override.get("version") or self.version)
 
+    def level_for(self, region: str) -> str:
+        override = self.server_overrides.get(region, {})
+        return str(override.get("level") or self.level)
+
+    def internal_level_value_for(self, region: str) -> Decimal:
+        override = self.server_overrides.get(region, {})
+        value = override.get("levelValue", override.get("internalLevelValue"))
+        return self.internal_level_value if value is None else Decimal(str(value))
+
+    def has_internal_level_override(self, region: str) -> bool:
+        override = self.server_overrides.get(region, {})
+        return "levelValue" in override or "internalLevelValue" in override
+
 
 class Song(BaseModel):
     id: str

@@ -82,12 +82,13 @@ class CompleteScoreEntry(BaseModel):
     chart_type: Literal["std", "dx"] = Field(alias="chartType")
     difficulty: Literal["basic", "advanced", "expert", "master", "remaster"]
     achievement: Decimal = Field(ge=0, le=101, decimal_places=4)
-    full_combo: Literal["FC", "FC+", "AP", "AP+"] | None = Field(
-        default=None, alias="fullCombo"
-    )
+    full_combo: Literal["FC", "FC+", "AP", "AP+"] | None = Field(default=None, alias="fullCombo")
     sync_status: str | None = Field(default=None, max_length=20, alias="syncStatus")
     dx_score: int | None = Field(default=None, ge=0, alias="dxScore")
+    dx_score_max: int | None = Field(default=None, ge=0, alias="dxScoreMax")
     played_at: datetime | None = Field(default=None, alias="playedAt")
+    displayed_level: Decimal | None = Field(default=None, ge=1, le=15.7, alias="displayedLevel")
+    source_song_key: str | None = Field(default=None, max_length=500, alias="sourceSongKey")
 
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 

@@ -161,15 +161,158 @@ def test_import_safely_corrects_wrong_chart_type(session: Session) -> None:
             ]
         ),
     )
-    score = session.scalar(
-        select(PlayerScore).where(PlayerScore.snapshot_id == result["id"])
-    )
+    score = session.scalar(select(PlayerScore).where(PlayerScore.snapshot_id == result["id"]))
     assert result["matchedCount"] == 1
     assert result["coverageRatio"] == Decimal("1.0000")
     assert score is not None
     assert score.chart_id == "chart"
     assert score.chart_type == "dx"
     assert score.match_status == "matched_type_corrected"
+
+
+def test_import_disambiguates_same_title_from_distinctive_difficulty_level(
+    session: Session,
+) -> None:
+    for song_id, artist in (("link-a", "Artist A"), ("link-b", "Artist B")):
+        session.add(
+            Song(
+                id=song_id,
+                title="Link",
+                artist=artist,
+                category="category",
+                bpm=Decimal("180"),
+                source_version="OLD",
+                is_locked=False,
+            )
+        )
+    for song_id, advanced_level in (("link-a", "8+"), ("link-b", "8")):
+        for difficulty, level in (("advanced", advanced_level), ("master", "12")):
+            chart_id = f"{song_id}-{difficulty}"
+            session.add(
+                Chart(
+                    id=chart_id,
+                    song_id=song_id,
+                    chart_type="std",
+                    difficulty=difficulty,
+                )
+            )
+            session.add(
+                ChartRevision(
+                    snapshot_id="snapshot",
+                    chart_id=chart_id,
+                    level=level,
+                    base_internal_level=Decimal("8.9" if level == "8+" else level),
+                    tap=1,
+                    hold=1,
+                    slide=1,
+                    touch=0,
+                    break_count=1,
+                    total=4,
+                    is_special=False,
+                    base_version="OLD",
+                    intl_version="OLD",
+                    release_date=date(2020, 1, 1),
+                )
+            )
+    session.commit()
+
+    result = import_complete_scores(
+        session,
+        payload(
+            [
+                {
+                    "title": "Link",
+                    "chartType": "std",
+                    "difficulty": "advanced",
+                    "achievement": "100.9375",
+                    "displayedLevel": "8.7",
+                },
+                {
+                    "title": "Link",
+                    "chartType": "std",
+                    "difficulty": "master",
+                    "achievement": "100.7639",
+                    "displayedLevel": "12",
+                },
+            ]
+        ),
+    )
+
+    scores = session.scalars(
+        select(PlayerScore)
+        .where(PlayerScore.snapshot_id == result["id"])
+        .order_by(PlayerScore.source_index)
+    ).all()
+    assert result["unmatchedCount"] == 0
+    assert [score.chart_id for score in scores] == [
+        "link-a-advanced",
+        "link-a-master",
+    ]
+
+
+def test_import_disambiguates_same_title_by_dx_score_max(session: Session) -> None:
+    for song_id, note_total in (("same-a", 278), ("same-b", 124)):
+        session.add(
+            Song(
+                id=song_id,
+                title="Same Title",
+                artist=song_id,
+                category="category",
+                bpm=Decimal("180"),
+                source_version="OLD",
+                is_locked=False,
+            )
+        )
+        chart_id = f"{song_id}-basic"
+        session.add(
+            Chart(
+                id=chart_id,
+                song_id=song_id,
+                chart_type="std",
+                difficulty="basic",
+            )
+        )
+        session.add(
+            ChartRevision(
+                snapshot_id="snapshot",
+                chart_id=chart_id,
+                level="6",
+                base_internal_level=Decimal("6.0"),
+                tap=note_total,
+                hold=0,
+                slide=0,
+                touch=0,
+                break_count=0,
+                total=note_total,
+                is_special=False,
+                base_version="OLD",
+                intl_version="OLD",
+                release_date=date(2020, 1, 1),
+            )
+        )
+    session.commit()
+
+    result = import_complete_scores(
+        session,
+        payload(
+            [
+                {
+                    "title": "Same Title",
+                    "chartType": "std",
+                    "difficulty": "basic",
+                    "achievement": "100.0000",
+                    "displayedLevel": "6",
+                    "dxScore": 800,
+                    "dxScoreMax": 834,
+                }
+            ]
+        ),
+    )
+
+    score = session.scalar(select(PlayerScore).where(PlayerScore.snapshot_id == result["id"]))
+    assert result["unmatchedCount"] == 0
+    assert score is not None
+    assert score.chart_id == "same-a-basic"
 
 
 def test_schema_rejects_wrong_region_and_over_precise_achievement() -> None:

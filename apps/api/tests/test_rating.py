@@ -42,6 +42,13 @@ def test_known_rating_examples(constant: str, achievement: str, expected: int) -
     assert calculate_chart_rating(constant, achievement) == expected
 
 
+def test_soteria_international_constant_correction_is_two_rating() -> None:
+    achievement = "100.5283"
+
+    assert calculate_chart_rating("14.0", achievement) == 315
+    assert calculate_chart_rating("14.1", achievement) == 317
+
+
 def test_ap_and_ap_plus_add_one() -> None:
     base = calculate_chart_rating("14.0", "100.5")
     assert calculate_chart_rating("14.0", "100.5", full_combo="AP") == base + 1
